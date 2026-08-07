@@ -1,0 +1,14 @@
+# Artefacts de build colcon — régénérés par `colcon build`, ne doivent pas être versionnés
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Éditeurs / OS
+.vscode/
+*.swp
+.DS_Store
