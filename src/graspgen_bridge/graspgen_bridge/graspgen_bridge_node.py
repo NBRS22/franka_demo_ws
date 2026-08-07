@@ -1,181 +1,163 @@
-import rclpy
-from rclpy.node import Node
-from franka_demo_interfaces.srv import GenerateGraspPose
-from sensor_msgs_py import point_cloud2 as pc2
-from geometry_msgs.msg import Pose, PoseArray
-import zmq
 import msgpack
 import msgpack_numpy as m
 import numpy as np
+import rclpy
+import zmq
+from franka_demo_interfaces.srv import GenerateGraspPose
+from geometry_msgs.msg import Pose, PoseArray
+from rclpy.node import Node
+from scipy.spatial.transform import Rotation
+from sensor_msgs_py import point_cloud2 as pc2
 
 m.patch()
 
-# Clés str (pas bytes) partout ci-dessous : avec msgpack>=1.0 (installé ici :
-# 1.2.1), raw=False est déjà le défaut de unpackb(), et msgpack_numpy
-# reconstruit correctement les ndarray même avec des clés str (vérifié). Le
-# contournement "clés bytes" documenté historiquement dans CLAUDE.md ne
-# s'applique qu'à une version antérieure de msgpack (raw=True par défaut) —
-# obsolète sur ce système, corrigé après un vrai KeyError b'grasps' en test.
+# GraspGen inference can take tens of seconds for large clouds
+_RECV_TIMEOUT_MS = 60_000
+_HEALTH_TIMEOUT_MS = 3_000
 
 
 class GraspGenBridgeNode(Node):
     def __init__(self):
         super().__init__('graspgen_bridge')
 
-        # params
-        self.declare_parameter('graspgen_host', '127.0.0.1')
-        self.declare_parameter('graspgen_port', 5556)
+        self.declare_parameter('graspgen_bridge_host', '172.22.62.94')
+        self.declare_parameter('graspgen_bridge_port', 5556)
         self.declare_parameter('num_grasps', 200)
         self.declare_parameter('topk_num_grasps', 10)
 
-        host = self.get_parameter('graspgen_host').value
-        port = self.get_parameter('graspgen_port').value
+        self._host = self.get_parameter('graspgen_bridge_host').value
+        self._port = self.get_parameter('graspgen_bridge_port').value
         self.num_grasps = self.get_parameter('num_grasps').value
         self.topk_num_grasps = self.get_parameter('topk_num_grasps').value
 
-        # zmq REQ socket
         self.zmq_context = zmq.Context()
-        self.zmq_socket = self.zmq_context.socket(zmq.REQ)
-        self.zmq_socket.connect(f"tcp://{host}:{port}")
-        self.get_logger().info(f"ZMQ REQ connected to {host}:{port}")
+        self.zmq_socket = self._make_socket()
 
-        # health check
         self._check_graspgen_server()
 
-        # service ROS
         self.srv = self.create_service(
             GenerateGraspPose,
             'generate_grasp_pose',
-            self.handle_generate_grasp_pose
+            self.handle_generate_grasp_pose,
         )
 
-        self.get_logger().info("GraspGen Bridge started")
+        self.get_logger().info('GraspGen Bridge started')
+
+    # -----------------------------------------------------------------------
+
+    def _make_socket(self):
+        """Create and connect a fresh ZMQ REQ socket."""
+        sock = self.zmq_context.socket(zmq.REQ)
+        sock.connect(f'tcp://{self._host}:{self._port}')
+        self.get_logger().info(f'ZMQ REQ connected to {self._host}:{self._port}')
+        return sock
+
+    def _recreate_socket(self):
+        """Reset ZMQ REQ state machine after a timeout (EFSM-safe).
+
+        After zmq.Again the socket is stuck mid-transaction; close with
+        linger=0 to discard pending state and open a fresh connection.
+        """
+        self.zmq_socket.close(linger=0)
+        self.zmq_socket = self._make_socket()
+
+    # -----------------------------------------------------------------------
 
     def _check_graspgen_server(self):
+        """Non-blocking startup health-check; logs availability but never blocks."""
         try:
-            self.zmq_socket.setsockopt(zmq.RCVTIMEO, 3000)
-            request = {"action": "health"}
-            self.zmq_socket.send(msgpack.packb(request))
+            self.zmq_socket.setsockopt(zmq.RCVTIMEO, _HEALTH_TIMEOUT_MS)
+            self.zmq_socket.send(msgpack.packb({'action': 'health'}))
             raw = self.zmq_socket.recv()
             result = msgpack.unpackb(raw)
-
-            if result.get("status") == "ok":
-                self.get_logger().info("✅ GraspGen server available")
+            if result.get('status') == 'ok':
+                self.get_logger().info('GraspGen server available')
             else:
-                self.get_logger().warn(f"⚠️ GraspGen server responded but with unexpected status: {result}")
-
-            self.zmq_socket.setsockopt(zmq.RCVTIMEO, -1)
-
+                self.get_logger().warn(f'GraspGen server unexpected status: {result}')
         except zmq.Again:
-            self.get_logger().warn("⚠️ GraspGen server unavailable at startup")
+            # Socket is now in EFSM state — must recreate before any next send
+            self._recreate_socket()
+            self.get_logger().warn('GraspGen server unavailable at startup')
+        finally:
             self.zmq_socket.setsockopt(zmq.RCVTIMEO, -1)
 
     def _pointcloud2_to_numpy(self, cloud_msg):
-        # read_points() renvoie un tableau structuré (champs nommés x/y/z),
-        # pas un tableau plat (N,3) — un cast direct dtype=float32 échoue
-        # avec "Cannot cast array data from dtype([...]) to dtype('float32')".
-        points = pc2.read_points(
-            cloud_msg,
-            field_names=("x", "y", "z"),
-            skip_nans=True
-        )
-        return np.stack(
-            [points["x"], points["y"], points["z"]], axis=-1
-        ).astype(np.float32)
+        points = pc2.read_points(cloud_msg, field_names=('x', 'y', 'z'), skip_nans=True)
+        return np.stack([points['x'], points['y'], points['z']], axis=-1).astype(np.float32)
 
     def _call_graspgen(self, xyz):
         request_msg = {
-            "action": "infer",
-            "point_cloud": xyz,
-            "num_grasps": self.num_grasps,
-            "topk_num_grasps": self.topk_num_grasps,
+            'action': 'infer',
+            'point_cloud': xyz,
+            'num_grasps': self.num_grasps,
+            'topk_num_grasps': self.topk_num_grasps,
         }
-        self.zmq_socket.send(msgpack.packb(request_msg))
-        self.get_logger().info("Waiting for GraspGen response...")
-        raw_response = self.zmq_socket.recv()
+
+        self.zmq_socket.setsockopt(zmq.RCVTIMEO, _RECV_TIMEOUT_MS)
+        try:
+            self.zmq_socket.send(msgpack.packb(request_msg))
+            self.get_logger().info('Waiting for GraspGen response...')
+            raw_response = self.zmq_socket.recv()
+        except zmq.Again:
+            self._recreate_socket()
+            raise TimeoutError(
+                f'GraspGen did not respond within {_RECV_TIMEOUT_MS // 1000}s'
+            )
+        finally:
+            self.zmq_socket.setsockopt(zmq.RCVTIMEO, -1)
+
         return msgpack.unpackb(raw_response)
 
     def _matrix_to_pose_array(self, grasps, frame_id):
         pose_array = PoseArray()
         pose_array.header.frame_id = frame_id
         pose_array.header.stamp = self.get_clock().now().to_msg()
-
         for grasp_matrix in grasps:
             pose = Pose()
             pose.position.x = float(grasp_matrix[0, 3])
             pose.position.y = float(grasp_matrix[1, 3])
             pose.position.z = float(grasp_matrix[2, 3])
-
-            qx, qy, qz, qw = self._rotation_matrix_to_quaternion(
-                grasp_matrix[:3, :3]
-            )
-            pose.orientation.x = qx
-            pose.orientation.y = qy
-            pose.orientation.z = qz
-            pose.orientation.w = qw
-
+            q = Rotation.from_matrix(grasp_matrix[:3, :3]).as_quat()
+            pose.orientation.x = float(q[0])
+            pose.orientation.y = float(q[1])
+            pose.orientation.z = float(q[2])
+            pose.orientation.w = float(q[3])
             pose_array.poses.append(pose)
-
         return pose_array
 
-    def _rotation_matrix_to_quaternion(self, R):
-        trace = R[0, 0] + R[1, 1] + R[2, 2]
-        if trace > 0:
-            s = 0.5 / np.sqrt(trace + 1.0)
-            w = 0.25 / s
-            x = (R[2, 1] - R[1, 2]) * s
-            y = (R[0, 2] - R[2, 0]) * s
-            z = (R[1, 0] - R[0, 1]) * s
-        elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
-            s = 2.0 * np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2])
-            w = (R[2, 1] - R[1, 2]) / s
-            x = 0.25 * s
-            y = (R[0, 1] + R[1, 0]) / s
-            z = (R[0, 2] + R[2, 0]) / s
-        elif R[1, 1] > R[2, 2]:
-            s = 2.0 * np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2])
-            w = (R[0, 2] - R[2, 0]) / s
-            x = (R[0, 1] + R[1, 0]) / s
-            y = 0.25 * s
-            z = (R[1, 2] + R[2, 1]) / s
-        else:
-            s = 2.0 * np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1])
-            w = (R[1, 0] - R[0, 1]) / s
-            x = (R[0, 2] + R[2, 0]) / s
-            y = (R[1, 2] + R[2, 1]) / s
-            z = 0.25 * s
-        return x, y, z, w
+    # -----------------------------------------------------------------------
 
     def handle_generate_grasp_pose(self, request, response):
-        self.get_logger().info("Request received from flow_manager")
-
+        self.get_logger().info('Grasp generation requested')
         try:
-            # convert PointCloud2 → numpy
             xyz = self._pointcloud2_to_numpy(request.object_cloud)
-            self.get_logger().info(f"Point cloud: {xyz.shape}")
+            self.get_logger().info(f'Point cloud: {xyz.shape[0]} points')
 
             if xyz.shape[0] == 0:
                 response.success = False
-                response.error_msg = "Empty point cloud"
+                response.error_msg = 'empty point cloud'
                 return response
 
-            # call GraspGen
             result = self._call_graspgen(xyz)
-            grasps = result["grasps"]
-            scores = result["confidences"]
-            self.get_logger().info(f"{len(scores)} grasps received")
+            grasps = result.get('grasps')
+            scores = result.get('confidences')
 
-            # convert → PoseArray
+            if grasps is None or scores is None:
+                response.success = False
+                response.error_msg = f'unexpected server response keys: {list(result.keys())}'
+                return response
+
+            self.get_logger().info(f'{len(scores)} grasps received')
+
             response.grasps = self._matrix_to_pose_array(
-                grasps,
-                request.object_cloud.header.frame_id
+                grasps, request.object_cloud.header.frame_id
             )
             response.scores = [float(s) for s in scores]
             response.success = True
-            response.error_msg = ""
+            response.error_msg = ''
 
         except Exception as e:
-            self.get_logger().error(f"Error: {e}")
+            self.get_logger().error(f'Error: {e}')
             response.success = False
             response.error_msg = str(e)
 

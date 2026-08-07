@@ -156,9 +156,9 @@ Le vrai modèle Gemini Robotics-ER (une fois branché à la place du simulateur)
 ## Dette technique identifiée — à traiter
 
 ### Critique
-- **ZMQ REQ sans timeout hors health-check** : `sam3_bridge._call_sam3()` et `graspgen_bridge._call_graspgen()` font un `recv()` bloquant sans `RCVTIMEO`. Si le serveur SAM3/GraspGen crash ou freeze pendant un pick, le bridge reste bloqué indéfiniment (lockstep REQ/REP), et comme les nodes sont single-thread, le bridge devient injoignable pour toute requête future. Le pattern retry/recreate-socket documenté n'est appliqué qu'au démarrage.
-- **`task_type: "stop"` ne peut rien interrompre** : `flow_manager_node.handle_execute_task` répond juste `"stopped"` sans agir. Comme `command_bridge` utilise un socket REP à alternance stricte et que `_handle_command` bloque tout le node pendant un pick, un "stop" ne peut même pas être reçu avant la fin du pick en cours. Problème de sécurité une fois MoveIt2 branché (bras en mouvement).
-- **Nested spinning** (`spin_until_future_complete` dans `flow_manager_node._call_service`, boucle `spin_once` dans `command_bridge_node._handle_command`) : anti-pattern ROS2 (risque de réentrance/deadlock). Passer à un `MultiThreadedExecutor` + callbacks async permettrait aussi de fixer le point "stop" ci-dessus.
+- ~~**ZMQ REQ sans timeout hors health-check**~~ **✅ Corrigé** : `sam3_bridge` et `graspgen_bridge` utilisent désormais `RCVTIMEO` (30 s / 60 s) + recreate-socket (`linger=0`) après chaque timeout `zmq.Again`. Le health-check de `graspgen_bridge` recrée aussi le socket s'il timeout au démarrage (bug EFSM corrigé).
+- **`task_type: "stop"` ne peut rien interrompre** : `command_bridge` utilise un socket REP à alternance stricte et `_handle_command` bloque tout le node pendant un pick → un "stop" ne peut pas être reçu avant la fin du pick en cours. Problème de sécurité une fois MoveIt2 branché (bras en mouvement).
+- **Nested spinning** (`spin_until_future_complete` dans `_call_service`, boucle `spin_once` dans `command_bridge_node._handle_command`) : anti-pattern ROS2 (risque de réentrance/deadlock). Passer à un `MultiThreadedExecutor` + callbacks async permettrait aussi de fixer le point "stop" ci-dessus.
 
 ### Incohérence d'API
 - **`GenerateGraspPose.srv` : `max_grasps` et `gripper_type` ignorés.** `flow_manager_node` envoie `grasp_req.max_grasps = 10` et `gripper_type = "franka_panda"`, mais `graspgen_bridge_node.handle_generate_grasp_pose` ne lit jamais ces champs — il utilise ses propres paramètres de lancement (`num_grasps`, `topk_num_grasps`). À corriger (lire la requête) ou à retirer du `.srv`.
@@ -169,6 +169,20 @@ Le vrai modèle Gemini Robotics-ER (une fois branché à la place du simulateur)
 - **Duplication du pattern health-check ZMQ** : `sam3_bridge` (retry loop 10 tentatives) et `graspgen_bridge` (une tentative, simple warning) divergent pour la même logique. Factoriser dans une classe utilitaire partagée réduirait le risque d'incohérence (cf. piège msgpack ci-dessus, spécifique à chaque bridge).
 
 ### Nice-to-have
-- `graspgen_bridge_node._rotation_matrix_to_quaternion` : ~25 lignes de conversion matrice→quaternion écrites à la main ; `scipy.spatial.transform.Rotation` ferait la même chose avec moins de risque de bug de signe/branche.
-- Aucun test unitaire sur la logique métier pure (validation dans `task_validator`, déprojection dans `pointcloud_node`, conversion quaternion dans `graspgen_bridge`) — testable sans ROS2, à ajouter avant de complexifier avec MoveIt2.
+- ~~`graspgen_bridge_node._rotation_matrix_to_quaternion`~~ **✅ Corrigé** : remplacé par `scipy.spatial.transform.Rotation.from_matrix(R).as_quat()`.
+- Aucun test unitaire sur la logique métier pure (validation dans `task_validator`, déprojection dans `pointcloud_node`) — testable sans ROS2, à ajouter avant de complexifier avec MoveIt2.
 - `camera_bridge` bind sur `tcp://*:5555` (toutes interfaces), aucune authentification sur les sockets ZMQ — acceptable si LAN fermé de labo, à garder en tête si le setup évolue.
+
+## Améliorations nodes — à faire plus tard
+
+### `command_bridge_node` (`gemini_er_bridge/command_bridge_node.py`)
+- **`task_type` absent vs non supporté** : si le champ `task_type` manque complètement, `command.get('task_type')` retourne `None` et le log dit "Unsupported task_type: 'None'" — trompeur. Distinguer les deux cas explicitement.
+- **Arrêt propre du thread ZMQ** : quand `destroy_node()` ferme le socket, `recv()` lève une `ZMQError` et le thread sort — mais si un message est en cours de traitement (pick long), le thread peut être tué brutalement. Ajouter un flag `_shutdown` pour sortir proprement.
+- **`wait_for_service` bloque le thread ZMQ** : pendant 5 secondes si le service est indisponible, Gemini ER attend sans réponse ni timeout côté client. Réduire ce timeout ou le supprimer si le service est garanti présent au démarrage.
+- **Pas de log de connexion client** : ZMQ REP ne notifie pas les connexions/déconnexions — impossible de savoir si Gemini ER est connecté ou non sans recevoir un message.
+
+### `camera_bridge_node` (`gemini_er_bridge/camera_bridge_node.py`)
+- **QoS** : subscriber en `RELIABLE` depth=10. Testé et fonctionnel avec la vraie RealSense D455 et Isaac Sim — ne pas changer sans raison.
+- ~~**SNDHWM=1**~~ **✅ Corrigé** : `socket.setsockopt(zmq.SNDHWM, 1)` ajouté avant le `bind()`. Les frames s'accumulent plus en buffer si Gemini ER est lent.
+- ~~**Watchdog / log de frames**~~ **✅ Corrigé** : timer toutes les 5 s, log `WARN` si aucune frame reçue depuis >5 s.
+- **Validation `jpeg_quality`** : si la valeur passée est hors 0–100, OpenCV peut planter silencieusement. Ajouter un clamp ou une vérification au démarrage.

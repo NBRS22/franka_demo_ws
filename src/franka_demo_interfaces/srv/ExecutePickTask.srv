@@ -1,0 +1,6 @@
+string object_label
+float32 point_x
+float32 point_y
+---
+bool success
+string message

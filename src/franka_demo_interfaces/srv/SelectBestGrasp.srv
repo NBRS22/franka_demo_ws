@@ -1,9 +1,0 @@
-geometry_msgs/PoseArray grasps
-float32[] scores
-string frame_id
----
-geometry_msgs/PoseStamped best_pose
-int32 best_idx
-float32 best_score
-bool success
-string message

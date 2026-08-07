@@ -7,14 +7,14 @@ find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-  "srv/GenerateGraspPose.srv"
-  "srv/SegmentObject.srv"
-  "srv/ExecuteTask.srv"
+  "srv/ExecutePickTask.srv"
   "srv/GetFrames.srv"
-  "srv/FuseMaskDepth.srv"
-  "srv/SelectBestGrasp.srv"
-  "action/MoveToPose.action"
-  "action/GoHome.action"
+  "srv/SegmentObject.srv"
+  "srv/VisualizeSegmentation.srv"
+  "srv/CreatePointcloud.srv"
+  "srv/GenerateGraspPose.srv"
+  "srv/VisualizeGrasps.srv"
+  "srv/ExecuteGrasp.srv"
   DEPENDENCIES sensor_msgs geometry_msgs
 )
 

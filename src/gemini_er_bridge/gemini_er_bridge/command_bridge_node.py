@@ -1,121 +1,116 @@
 import threading
-
-import rclpy
-from rclpy.node import Node
-from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.executors import MultiThreadedExecutor
-from franka_demo_interfaces.srv import ExecuteTask
-import zmq
 import msgpack
+import rclpy
+import zmq
+
+from franka_demo_interfaces.srv import ExecutePickTask
+from rclpy.node import Node
 
 
 class CommandBridgeNode(Node):
     def __init__(self):
         super().__init__('command_bridge')
 
-        # params
-        self.declare_parameter('command_host', '0.0.0.0')
-        self.declare_parameter('command_port', 5558)
-        self.declare_parameter('flow_manager_timeout', 30.0)
+        # Params
+        self.declare_parameter('command_bridge_host', '0.0.0.0')
+        self.declare_parameter('command_bridge_port', 5556)
+        self.declare_parameter('command_bridge_timeout', 60.0)
 
-        self.host = self.get_parameter('command_host').value
-        self.port = self.get_parameter('command_port').value
-        self.timeout = self.get_parameter('flow_manager_timeout').value
+        self.host = self.get_parameter('command_bridge_host').value
+        self.port = self.get_parameter('command_bridge_port').value
+        self.timeout = self.get_parameter('command_bridge_timeout').value
 
-        # ZMQ REP socket
+        # ZMQ REP Socket
         self.zmq_context = zmq.Context()
         self.zmq_socket = self.zmq_context.socket(zmq.REP)
-        self.zmq_socket.bind(f"tcp://{self.host}:{self.port}")
-        self.get_logger().info(f"ZMQ REP bound on {self.host}:{self.port}")
+        self.zmq_socket.bind(f'tcp://{self.host}:{self.port}')
+        self.get_logger().info(f'ZMQ REP bound on {self.host}:{self.port}')
 
-        # _handle_command blocks its own thread waiting on this client's
-        # future (cf. _call_service) — needs a DIFFERENT callback group than
-        # poll_zmq's timer, otherwise the default mutually-exclusive group
-        # would prevent the response from ever being processed while
-        # _handle_command is blocked, deadlocking even under a
-        # MultiThreadedExecutor.
-        self.client = self.create_client(
-            ExecuteTask, 'execute_task', callback_group=ReentrantCallbackGroup()
-        )
+        # ROS Service clients
+        self.client = self.create_client(ExecutePickTask, 'execute_pick_task')
 
-        # timer to poll the ZMQ socket
-        self.create_timer(0.05, self.poll_zmq)
+        # ZMQ thread
+        self._shutdown = threading.Event()
+        self._zmq_thread = threading.Thread(target=self._zmq_loop, daemon=True)
+        self._zmq_thread.start()
 
-        self.get_logger().info("Command Bridge started, waiting for Gemini ER commands...")
+        self.get_logger().info('Command Bridge started')
 
-    def poll_zmq(self):
-        try:
-            # non-blocking
-            raw = self.zmq_socket.recv(zmq.NOBLOCK)
-        except zmq.Again:
-            return
+    def _zmq_loop(self):
+        while not self._shutdown.is_set() and rclpy.ok():
+            try:
+                raw = self.zmq_socket.recv()
+            except zmq.ZMQError:
+                break
+            try:
+                command = msgpack.unpackb(raw, raw=False)
+                self.get_logger().info(f"Command received : task = {command.get('task_type')}")
+                self._handle_command(command)
+            except Exception as e:
+                self.get_logger().error(f'Command parsing error : {e}')
+                self._send({'status': 'failed', 'message': f'Parsing error : {e}'})
 
-        try:
-            command = msgpack.unpackb(raw, raw=False)
-            self.get_logger().info(
-                f"Command received: task={command.get('task_type')} "
-                f"label={command.get('object_label')}"
-            )
-            self._handle_command(command)
-
-        except Exception as e:
-            self.get_logger().error(f"Command parsing error: {e}")
-            self.zmq_socket.send(msgpack.packb({
-                "status": "failed",
-                "message": f"Parsing error: {str(e)}"
-            }))
+    def _send(self, payload):
+        self.zmq_socket.send(msgpack.packb(payload))
 
     def _handle_command(self, command):
-        # wait_for_service() polls the graph directly, no spin needed.
-        if not self.client.wait_for_service(timeout_sec=5.0):
-            self.get_logger().error("flow_manager service unavailable")
-            self.zmq_socket.send(msgpack.packb({
-                "status": "failed",
-                "message": "flow_manager unavailable"
-            }))
+        task_type = command.get('task_type')
+        if task_type == 'pick':
+            self._handle_pick_command(command)
+        else:
+            self.get_logger().warn(f"Unsupported task_type : '{task_type}'")
+            self._send({'status': 'failed', 'message': f"unsupported task_type : '{task_type}'"})
+
+    def _handle_pick_command(self, command):
+
+        object_label = command.get('object_label')
+        point_x = command.get('point_x')
+        point_y = command.get('point_y')
+
+        if not object_label or point_x is None or point_y is None:
+            self.get_logger().warn('Missing required fields : object_label, point_x, point_y')
+            self._send({'status': 'failed', 'message': 'missing required fields'})
             return
 
-        # build the request
-        request = ExecuteTask.Request()
-        request.task_type = command.get('task_type', 'pick')
-        request.object_label = command.get('object_label', '')
-        request.point_x = float(command.get('point_x', 0.0))
-        request.point_y = float(command.get('point_y', 0.0))
+        if not self.client.service_is_ready():
+            self.get_logger().error('execute_pick_task service not ready')
+            self._send({'status': 'failed', 'message': 'execute_pick_task service not ready'})
+            return
 
-        # call flow_manager service
-        self.get_logger().info("Sending command to flow_manager...")
+        request = ExecutePickTask.Request()
+        request.object_label = object_label
+        request.point_x = float(point_x)
+        request.point_y = float(point_y)
 
-        # Blocks THIS thread (a MultiThreadedExecutor worker, not the
-        # executor's own dispatch loop) on a plain threading.Event, woken up
-        # by the future's done-callback. This replaces the old spin_once
-        # loop, which crashed with "Executor is already spinning" — cf.
-        # dette technique "Nested spinning" dans CLAUDE.md — since poll_zmq
-        # is itself already running inside the executor's dispatch.
+        self.get_logger().info(
+            f"Sending pick task : label = '{object_label}' point = ({point_x}, {point_y})"
+        )
+
         future = self.client.call_async(request)
         event = threading.Event()
         future.add_done_callback(lambda _f: event.set())
 
-        if not event.wait(timeout=self.timeout):
+        completed = event.wait(timeout=self.timeout)
+
+        if self._shutdown.is_set():
             future.cancel()
-            self.get_logger().error("flow_manager timeout")
-            self.zmq_socket.send(msgpack.packb({
-                "status": "failed",
-                "message": "flow_manager timeout"
-            }))
+            self._send({'status': 'failed', 'message': 'node shutting down'})
             return
 
-        # return the result to Gemini ER
-        result = future.result()
-        status = "ok" if result.success else "failed"
-        self.get_logger().info(f"Result: {status} - {result.message}")
+        if not completed:
+            future.cancel()
+            self.get_logger().error('execute_pick_task timeout')
+            self._send({'status': 'failed', 'message': 'execute_pick_task timeout'})
+            return
 
-        self.zmq_socket.send(msgpack.packb({
-            "status": status,
-            "message": result.message
-        }))
+        result = future.result()
+        status = 'ok' if result.success else 'failed'
+        self.get_logger().info(f'Pick task result : {status} — {result.message}')
+        self._send({'status': status, 'message': result.message})
 
     def destroy_node(self):
-        self.zmq_socket.close()
+        self._shutdown.set()    
+        self.zmq_socket.close()   
         self.zmq_context.term()
         super().destroy_node()
 
@@ -123,10 +118,8 @@ class CommandBridgeNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = CommandBridgeNode()
-    executor = MultiThreadedExecutor()
-    executor.add_node(node)
     try:
-        executor.spin()
+        rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
