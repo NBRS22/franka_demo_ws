@@ -22,15 +22,13 @@ class CameraBridgeNode(Node):
         self.jpeg_quality = self.get_parameter('camera_bridge_jpeg_quality').value
 
         self._last_frame_time = None
+        
         self._WATCHDOG_INTERVAL_S = 10.0
         self._WATCHDOG_STALE_S = 10.0
 
         # ZMQ PUB socket
         self.zmq_context = zmq.Context()
-        self.socket = self.zmq_context.socket(zmq.PUB)
-        self.socket.setsockopt(zmq.SNDHWM, 1)
-        self.socket.bind(f'tcp://{self.host}:{self.port}')
-        self.get_logger().info(f'ZMQ PUB bound on {self.host}:{self.port}')
+        self.socket = self._make_socket()
 
         # CV Bridge
         self.bridge = CvBridge()
@@ -42,6 +40,13 @@ class CameraBridgeNode(Node):
         self.create_timer(self._WATCHDOG_INTERVAL_S, self._watchdog)
 
         self.get_logger().info('Camera Bridge started')
+
+    def _make_socket(self):
+        sock = self.zmq_context.socket(zmq.PUB)
+        sock.setsockopt(zmq.SNDHWM, 1)
+        sock.bind(f'tcp://{self.host}:{self.port}')
+        self.get_logger().info(f'ZMQ PUB bound on {self.host}:{self.port}')
+        return sock
 
     def rgb_callback(self, msg: Image):
         try:

@@ -22,11 +22,9 @@ class CommandBridgeNode(Node):
 
         # ZMQ REP Socket
         self.zmq_context = zmq.Context()
-        self.zmq_socket = self.zmq_context.socket(zmq.REP)
-        self.zmq_socket.bind(f'tcp://{self.host}:{self.port}')
-        self.get_logger().info(f'ZMQ REP bound on {self.host}:{self.port}')
+        self.zmq_socket = self._make_socket()
 
-        # ROS Service clients
+        # ROS Client Services
         self.client = self.create_client(ExecutePickTask, 'execute_pick_task')
 
         # ZMQ thread
@@ -35,6 +33,12 @@ class CommandBridgeNode(Node):
         self._zmq_thread.start()
 
         self.get_logger().info('Command Bridge started')
+
+    def _make_socket(self):
+        sock = self.zmq_context.socket(zmq.REP)
+        sock.bind(f'tcp://{self.host}:{self.port}')
+        self.get_logger().info(f'ZMQ REP bound on {self.host}:{self.port}')
+        return sock
 
     def _zmq_loop(self):
         while not self._shutdown.is_set() and rclpy.ok():

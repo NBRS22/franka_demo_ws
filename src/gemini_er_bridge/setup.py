@@ -13,9 +13,9 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='ngr',
-    maintainer_email='ngr@todo.todo',
-    description='TODO: Package description',
+    maintainer='nour.el.bachari',
+    maintainer_email='nour.el.bachari@accenture.com',
+    description='Bridge for communicating with the Gemini ER system',
     license='TODO: License declaration',
     extras_require={
         'test': [

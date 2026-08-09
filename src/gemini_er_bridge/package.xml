@@ -3,8 +3,8 @@
 <package format="3">
   <name>gemini_er_bridge</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="ngr@todo.todo">ngr</maintainer>
+  <description>Bridge for communicating with the Gemini ER system</description>
+  <maintainer email="nour.el.bachari@accenture.com">nour.el.bachari</maintainer>
   <license>TODO: License declaration</license>
 
   <depend>rclpy</depend>

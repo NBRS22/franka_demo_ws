@@ -10,6 +10,7 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name + '/launch', ['launch/graspgen_bridge.launch.py']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -25,6 +26,7 @@ setup(
     entry_points={
         'console_scripts': [
             'graspgen_bridge_node = graspgen_bridge.graspgen_bridge_node:main',
+            'visualize_grasps_node = graspgen_bridge.visualize_grasps_node:main',
         ],
     },
 )

@@ -1,0 +1,47 @@
+# CLAUDE.md — `graspgen_bridge`
+
+Ce fichier documente spécifiquement le package `graspgen_bridge`. Pour la vue d'ensemble du pipeline complet, voir le `CLAUDE.md` à la racine du workspace.
+
+## Rôle du package
+
+Pont ZMQ REQ/REP vers le serveur GraspGen (génération de grasps à partir d'un nuage de points), et visualisation RViz des grasps obtenus. Deux nodes :
+
+| Node | Fichier | Service exposé | Rôle |
+|---|---|---|---|
+| `graspgen_bridge` | `graspgen_bridge_node.py` | `generate_grasp_pose` | convertit le cloud en `xyz` numpy, appelle GraspGen via ZMQ REQ, convertit les matrices renvoyées en `PoseArray`, déclenche la visualisation |
+| `visualize_grasps_node` | `visualize_grasps_node.py` | `visualize_grasps` | construit les markers RViz (flèches, meilleur grasp en vert) et les publie sur `/pick/grasp_markers` |
+
+Les deux nodes sont démarrés par `robot_task_manager/launch/robot_task_manager.launch.py` dans le pipeline complet (via `IncludeLaunchDescription`). Le package a aussi son propre launch file, `launch/graspgen_bridge.launch.py`, pour les lancer isolément (debug) :
+
+```bash
+ros2 launch graspgen_bridge graspgen_bridge.launch.py
+```
+
+## `graspgen_bridge_node`
+
+- Socket ZMQ **REQ**, créé via `_make_socket()` (`connect`, pas `bind`), recréé via `_recreate_socket()` après un `zmq.Again` — même pattern que `sam3_bridge_node` (cf. CLAUDE.md racine, section "piège msgpack").
+- `graspgen_bridge_host` par défaut : `127.0.0.1`, `graspgen_bridge_port` par défaut : `5558` (changés depuis `172.22.62.94`/`5556` pendant le développement local — à repasser aux valeurs LAN réelles pour un déploiement hors poste de dev ; CLAUDE.md racine mis à jour en conséquence, cf. notes de cohérence plus bas).
+- `num_grasps` (200) et `topk_num_grasps` (10) : paramètres ROS2 déclarés (pas de constantes magiques), transmis tels quels au serveur GraspGen dans la requête `infer`.
+- `_check_graspgen_server` : health-check non-bloquant au démarrage (`{'action': 'health'}`, timeout 3s) — même pattern que `_check_sam3_server` dans `sam3_bridge`.
+- `handle_generate_grasp_pose` : convertit le `PointCloud2` reçu en `xyz` numpy (`_pointcloud2_to_numpy`), appelle GraspGen (timeout 60s, l'inférence peut être lente sur un gros nuage), convertit les matrices 4×4 renvoyées en `PoseArray` (`_matrix_to_pose_array`, quaternion via `scipy.spatial.transform.Rotation`), puis appelle `_trigger_visualization(...)` — **sans attendre le résultat** (fire-and-forget, même justification que `sam3_bridge_node` : exécuteur mono-thread `rclpy.spin()`, un appel bloquant recréerait un risque de deadlock).
+- `_trigger_visualization` / `_on_visualization_done` : client ROS2 vers `visualize_grasps`, vérifie `service_is_ready()` (non-bloquant) avant l'appel, log `info` si succès, `warn`/`error` si échec — mais ne fait jamais échouer `/generate_grasp_pose` lui-même.
+- `m.patch()` (activation de `msgpack_numpy`, nécessaire pour sérialiser/désérialiser les `ndarray` du nuage de points et des matrices de grasp via msgpack) est appelé dans `__init__`, pas au niveau module.
+
+## `visualize_grasps_node`
+
+- Publisher `/pick/grasp_markers` (`visualization_msgs/MarkerArray`).
+- `handle_visualize` : efface les anciens markers (`Marker.DELETEALL`), crée une flèche (`Marker.ARROW`) par grasp reçu — le meilleur (score max) en vert opaque, les autres en cyan semi-transparent — puis publie le tout en un seul `MarkerArray`.
+- Logique de rendu inchangée depuis sa création dans `robot_task_manager` (avant son déplacement vers ce package).
+
+## Améliorations possibles
+
+### `graspgen_bridge_node`
+1. **Pas de validation que `len(grasps) == len(scores)`** avant de construire `response.grasps`/`response.scores` et de déclencher la visualisation — si le serveur GraspGen renvoyait un jour des listes de tailles différentes, `visualize_grasps_node` calculerait `best_idx` à partir de `scores` mais l'appliquerait à l'indexation de `grasps`, ce qui pourrait colorer en vert un grasp qui n'est pas réellement le meilleur (pas de crash, mais résultat silencieusement incohérent).
+2. **`msgpack.unpackb(raw)` sans `raw=False` explicite** dans `_check_graspgen_server` et `_call_graspgen` (contrairement à `sam3_bridge_node`, qui passe `raw=False` explicitement partout) — repose sur le défaut de la version de `msgpack` installée. Comportement correct aujourd'hui (`msgpack==1.2.1`, `raw=False` par défaut — cf. CLAUDE.md racine, piège msgpack), mais implicite : si `msgpack` est un jour rétrogradé vers une version pré-1.0, ce fichier casserait silencieusement (clés bytes au lieu de str) sans qu'aucun changement de code ne l'indique. Ajouter `raw=False` explicitement rendrait l'intention robuste au changement de version.
+
+### `visualize_grasps_node`
+1. **Bug confirmé (pas juste théorique) : `grasps` non vide + `scores` vide → `IndexError` masqué.** `handle_visualize` ne rejette que le cas `not grasps` (ligne 28) ; si `request.grasps.poses` est non vide mais `request.scores` est vide, `best_idx = scores.index(max(scores)) if scores else 0` retombe sur `0`, puis la ligne de log finale `f"score={scores[best_idx]:.3f}"` fait `scores[0]` sur une liste vide → `IndexError: list index out of range`. L'exception est rattrapée par le `except Exception` englobant (`response.success=False`, log `error`), donc le node ne plante pas, mais le message d'erreur renvoyé au client ("list index out of range") ne dit rien de la vraie cause (mismatch grasps/scores) — confusant à débugger. Plus généralement, même sans liste vide, un simple mismatch de longueur (`len(grasps) != len(scores)`, tous deux non vides) ne provoque pas d'erreur mais peut marquer en vert une pose qui ne correspond pas réellement au meilleur score. Ajouter une validation explicite `len(grasps) == len(scores)` en tout début de `handle_visualize` réglerait les deux cas avec un message d'erreur clair.
+
+## Notes de cohérence avec le CLAUDE.md racine
+
+- `graspgen_bridge_host`/`graspgen_bridge_port` par défaut changés `172.22.62.94`/`5556` → `127.0.0.1`/`5558` — CLAUDE.md racine mis à jour en conséquence (le narratif "port 5556 partagé avec `command_bridge`" ne s'applique donc plus au port par défaut actuel, uniquement à la config de déploiement LAN d'origine), mais **à corriger avant un déploiement réel** (le serveur GraspGen tourne sur une machine séparée, pas en local).

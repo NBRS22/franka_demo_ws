@@ -6,7 +6,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Pipeline pick-and-place robotique pour un Franka FR3, orchestré en ROS2 (Jazzy), avec la perception (segmentation, génération de grasp) externalisée dans des serveurs Python séparés (SAM3, GraspGen) accédés via ZMQ+msgpack, et une commande déclenchée par Gemini ER (VLM tournant sur une machine séparée).
 
-Le workspace n'est **pas** un dépôt git (`git init` pas encore fait dans `~/franka_demo_ws`).
+**Le pipeline s'arrête volontairement à la génération/visualisation des grasp poses pour le moment** — l'exécution du mouvement (MoveIt2) a été entièrement retirée du repo (`motion_node`, `scene_publisher_node`, `ExecuteGrasp.srv` supprimés), cf. "Architecture" et roadmap #2. Ce n'est pas juste débranché : il faudra la réécrire pour la rebrancher.
+
+Packages du workspace :
+
+| Package | Type | Rôle |
+|---|---|---|
+| `franka_demo_interfaces` | `ament_cmake` | Définitions des `.srv` |
+| `franka_demo_bringup` | `ament_python` (launch only) | Launch file racine : RealSense + inclusion du launch de `robot_task_manager` |
+| `robot_task_manager` | `ament_python` | Orchestration du pick (`pick_task_node`), buffer caméra, pointcloud — son launch file (`launch/robot_task_manager.launch.py`) démarre aussi les bridges (`gemini_er_bridge`, `sam3_bridge`, `graspgen_bridge`) |
+| `gemini_er_bridge` | `ament_python` | Pont ZMQ vers Gemini ER (`camera_bridge_node`, `command_bridge_node`) |
+| `sam3_bridge` | `ament_python` | Pont ZMQ vers le serveur SAM3 (`sam3_bridge_node`) + visualisation RViz de la segmentation (`visualize_segmentation_node`, déclenché par `sam3_bridge_node` dès le masque reçu) — a son propre launch file (`launch/sam3_bridge.launch.py`) pour lancer ses 2 nodes isolément |
+| `graspgen_bridge` | `ament_python` | Pont ZMQ vers le serveur GraspGen (`graspgen_bridge_node`) + visualisation RViz des grasps (`visualize_grasps_node`, déclenché par `graspgen_bridge_node` dès les grasps reçus) — a son propre launch file (`launch/graspgen_bridge.launch.py`) pour lancer ses 2 nodes isolément |
 
 ## Commandes courantes
 
@@ -14,8 +25,8 @@ Le workspace n'est **pas** un dépôt git (`git init` pas encore fait dans `~/fr
 
 ```bash
 cd ~/franka_demo_ws
-colcon build                                   # tout le workspace
-colcon build --packages-select flow_manager    # un seul package
+colcon build                                        # tout le workspace
+colcon build --packages-select robot_task_manager    # un seul package
 source install/setup.bash
 ```
 
@@ -24,18 +35,48 @@ source install/setup.bash
 ### Lancer le pipeline complet
 
 ```bash
-ros2 launch flow_manager flow_manager.launch.py
+ros2 launch franka_demo_bringup franka_demo.launch.py
 ```
 
-Ce launcher démarre : Realsense D455 (`align_depth.enable:=true`), `camera_bridge`, `camera_buffer_node`, `task_validator_node`, `pointcloud_node`, `grasp_selector_node`, `flow_manager_node`, `sam3_bridge`, `graspgen_bridge`, `command_bridge`. Les serveurs SAM3, GraspGen et Gemini ER (env conda séparés) doivent être lancés **avant**, hors ROS2.
+`franka_demo_bringup/launch/franka_demo.launch.py` est le launch file racine. Il ne cible plus qu'un robot réel — **la branche Isaac Sim (`panda_motion_server`) et l'argument `use_sim` ont été retirés**, il n'y a plus qu'un seul chemin de lancement. Il ne fait plus que démarrer RealSense D455 (`align_depth.enable:=true`, `pointcloud.enable:=true`) et **inclure** (`IncludeLaunchDescription`) le launch file de `robot_task_manager`, qui lui démarre tous les nodes ROS2 du pipeline (bridges compris) :
+
+```
+franka_demo_bringup/launch/franka_demo.launch.py
+  ├─ RealSense D455 (rs_launch.py de realsense2_camera)
+  └─ IncludeLaunchDescription(robot_task_manager/launch/robot_task_manager.launch.py)
+        ├─ Node(gemini_er_bridge, camera_bridge_node)
+        ├─ Node(gemini_er_bridge, command_bridge_node)
+        ├─ IncludeLaunchDescription(sam3_bridge/launch/sam3_bridge.launch.py)
+        │     ├─ Node(sam3_bridge, sam3_bridge_node)
+        │     └─ Node(sam3_bridge, visualize_segmentation_node)
+        ├─ IncludeLaunchDescription(graspgen_bridge/launch/graspgen_bridge.launch.py)
+        │     ├─ Node(graspgen_bridge, graspgen_bridge_node)
+        │     └─ Node(graspgen_bridge, visualize_grasps_node)
+        ├─ camera_buffer_node
+        ├─ filter_pointcloud_node
+        └─ pick_task_node
+```
+
+`robot_task_manager.launch.py` démarre donc aussi des executables d'autres packages (`gemini_er_bridge`, `sam3_bridge`, `graspgen_bridge`) — d'où les `exec_depend` correspondants ajoutés à `robot_task_manager/package.xml`. Ce découpage permet de faire `ros2 launch robot_task_manager robot_task_manager.launch.py` isolément pour lancer tout le pipeline ROS2 sans RealSense — cf. section suivante.
+
+Les deux nodes de `sam3_bridge` (`sam3_bridge_node` + `visualize_segmentation_node`) et les deux nodes de `graspgen_bridge` (`graspgen_bridge_node` + `visualize_grasps_node`) ne sont plus listés directement en `Node()` dans `robot_task_manager.launch.py` : celui-ci **inclut** (`IncludeLaunchDescription`) le launch file propre à chacun de ces deux packages, qui démarre ses deux nodes. Seul `gemini_er_bridge` reste listé directement en `Node()` (pas de launch file dédié pour l'instant).
+
+Les serveurs SAM3, GraspGen et Gemini ER (env conda séparés) doivent être lancés **avant**, hors ROS2.
 
 ### Lancer un node individuellement (debug)
 
 ```bash
-ros2 run flow_manager flow_manager_node
-ros2 run flow_manager camera_buffer_node
+ros2 launch robot_task_manager robot_task_manager.launch.py   # tout le pipeline ROS2 (bridges + robot_task_manager), sans RealSense
+ros2 launch sam3_bridge sam3_bridge.launch.py                 # juste les 2 nodes sam3_bridge (sam3_bridge_node + visualize_segmentation_node)
+ros2 launch graspgen_bridge graspgen_bridge.launch.py         # juste les 2 nodes graspgen_bridge (graspgen_bridge_node + visualize_grasps_node)
+
+ros2 run robot_task_manager pick_task_node
+ros2 run robot_task_manager camera_buffer_node
+ros2 run robot_task_manager filter_pointcloud_node
 ros2 run sam3_bridge sam3_bridge_node
+ros2 run sam3_bridge visualize_segmentation_node
 ros2 run graspgen_bridge graspgen_bridge_node
+ros2 run graspgen_bridge visualize_grasps_node
 ros2 run gemini_er_bridge command_bridge_node
 ros2 run gemini_er_bridge camera_bridge_node
 ```
@@ -61,10 +102,11 @@ Les tests présents sont uniquement les templates `ament_copyright` / `ament_fla
 
 ```bash
 ros2 service list
-ros2 service call /execute_task franka_demo_interfaces/srv/ExecuteTask \
-  "{task_type: 'pick', object_label: 'red mug', point_x: 640, point_y: 360}"
-ros2 topic echo /best_grasp_pose
-ros2 topic echo /grasp_poses
+ros2 service call /execute_pick_task franka_demo_interfaces/srv/ExecutePickTask \
+  "{object_label: 'red mug', point_x: 640, point_y: 360}"
+ros2 topic echo /pick/grasp_markers
+ros2 topic echo /pick/segmentation_visualization
+ros2 topic echo /pick/pointcloud
 ```
 
 ## Architecture
@@ -73,40 +115,67 @@ ros2 topic echo /grasp_poses
 
 ```
 Realsense D455 → camera_bridge → ZMQ PUB 5555 → Gemini ER
-Gemini ER → ZMQ REQ 5558 → command_bridge → service /execute_task
-flow_manager (handle_pick, séquentiel et bloquant) :
-  1. /validate_task     → task_validator_node
-  2. /get_frames        → camera_buffer_node (dernier RGB+depth+camera_info bufferisés)
-  3. /segment_object     → sam3_bridge → ZMQ REQ 5557 → serveur SAM3
-  4. /fuse_mask_depth    → pointcloud_node (déprojection masque+depth → PointCloud2 via intrinsèques K)
-  5. /generate_grasp_pose → graspgen_bridge → ZMQ REQ 5556 → serveur GraspGen
-  6. /select_best_grasp  → grasp_selector_node → publie /grasp_poses + /best_grasp_pose (RViz)
-  7. MoveIt2 → TODO, pas encore branché
+Gemini ER → ZMQ REQ 5556 → command_bridge → service /execute_pick_task
+pick_task_node (handle_pick_task, séquentiel, callbacks async via ReentrantCallbackGroup) :
+  1. /get_frames              → camera_buffer_node (dernier RGB+depth+camera_info+cloud bufferisés —
+                                  ⚠️ plus aucune vérification de synchronisation, cf. dette technique)
+  2. /segment_object           → sam3_bridge → ZMQ REQ 5557 → serveur SAM3
+                                  (sam3_bridge_node appelle lui-même /visualize_segmentation dès le masque
+                                  reçu, en fire-and-forget — pas d'appel depuis pick_task_node, cf. note ci-dessous)
+  3. /filter_pointcloud        → filter_pointcloud_node (filtre le nuage natif RealSense par le masque SAM3)
+  4. /generate_grasp_pose      → graspgen_bridge → ZMQ REQ 5558 → serveur GraspGen
+                                  (graspgen_bridge_node appelle lui-même /visualize_grasps dès les grasps
+                                  reçus, en fire-and-forget — même pattern que sam3_bridge_node, cf. note ci-dessous)
+  -- fin du flow actuel --
 ```
 
-Le pipeline `flow_manager_node._handle_pick` est entièrement synchrone (`_call_service` fait `client.call_async` + `spin_until_future_complete` avec timeout par étape). Chaque étape échoue proprement avec `success=False` + message si le service précédent échoue ou timeout.
+`filter_pointcloud_node` ne déprojette plus rien lui-même : il reçoit directement en requête le nuage natif organisé RealSense (`/camera/camera/depth/color/points`, activé via `pointcloud.enable:=true` en plus de `align_depth.enable:=true`) — bufferisé par `camera_buffer_node` en même temps que rgb/depth/camera_info et transmis par `pick_task_node` via `frame.cloud` — et à l'appel de `/filter_pointcloud` indexe ce nuage organisé (`height`×`width`) avec le masque SAM3 (même résolution car aligné sur le repère couleur) pour n'en garder que les points de l'objet segmenté. `FilterPointcloud.srv` prend donc `mask` + `cloud` en requête (`depth`/`camera_info` retirés, devenus inutiles ; `filter_pointcloud_node` n'a plus de subscription propre). Le calcul manuel via les intrinsèques `K` (`fx`/`fy`/`cx`/`cy`) a été supprimé.
+
+Bufferiser le cloud dans `camera_buffer_node` plutôt que dans `filter_pointcloud_node` corrige aussi un problème de cohérence temporelle : avant, `filter_pointcloud_node` récupérait le nuage le plus récent au moment de `/filter_pointcloud`, appelé *après* tout l'aller-retour SAM3 (potentiellement 1s+) — le masque venait d'une RGB plus ancienne que le nuage utilisé pour le filtrer. Désormais rgb/depth/camera_info/cloud sont capturés ensemble en un seul appel `/get_frames`, au tout début du flow, donc masque et nuage correspondent au même instant caméra.
+
+`visualize_grasps_node` (déplacé du package `robot_task_manager` vers `graspgen_bridge`, service `visualize_grasps`, topic `/pick/grasp_markers`) est un node séparé, inchangé dans son fonctionnement interne (markers RViz, flèches, meilleur grasp en vert opaque, les autres en cyan semi-transparent). Exactement comme pour `sam3_bridge`/`visualize_segmentation_node` : ce n'est plus `pick_task_node` qui appelle `/visualize_grasps`, c'est `graspgen_bridge_node` lui-même — `handle_generate_grasp_pose` appelle `_trigger_visualization(response.grasps, response.scores)` juste après avoir construit sa réponse, en fire-and-forget (`service_is_ready()` non-bloquant + `call_async`/`add_done_callback`, sans jamais bloquer `handle_generate_grasp_pose`). `pick_task_node` n'a donc plus de client ni d'appel vers `visualize_grasps` (retiré : `viz_grasps_client`, méthode `_visualize_grasps`).
+
+`visualize_segmentation_node` (package `sam3_bridge`, service `visualize_segmentation`, topic `/pick/segmentation_visualization`) reste un node séparé, inchangé dans son fonctionnement interne (overlay = fond désaturé/assombri hors masque + croix rouge au point cliqué). Ce qui a changé, c'est **qui l'appelle** : ce n'est plus `pick_task_node` mais `sam3_bridge_node` lui-même — `handle_segment_object` appelle `/visualize_segmentation` (`_trigger_visualization`) juste après avoir construit `response.mask`, en *fire-and-forget* (`call_async` + `add_done_callback`, sans attendre/bloquer sur le résultat côté `handle_segment_object`, qui répond à `pick_task_node` sans attendre la fin de la visualisation ; un log `info`/`warn` selon le résultat arrive plus tard via `_on_visualization_done`). `pick_task_node` n'a donc plus de client ni d'appel vers ce service ; il ne connaît même plus son existence.
+
+Le choix fire-and-forget (plutôt qu'un appel bloquant comme `pick_task_node._call_service`) est délibéré : `sam3_bridge_node` tourne avec un exécuteur mono-thread par défaut (`rclpy.spin(node)`, pas de `MultiThreadedExecutor`) — un appel bloquant depuis l'intérieur de `handle_segment_object` recréerait le même risque de deadlock par nested-spin que celui déjà corrigé dans `pick_task_node` (cf. Historique), puisque le callback de complétion du futur ne pourrait pas être traité tant que le thread unique reste bloqué à attendre ce même futur. En ne bloquant jamais, ce problème ne se pose pas.
+
+`pick_task_node.handle_pick_task` s'arrête après l'étape 5 (visualisation des grasps), volontairement, pour l'instant. **L'exécution du mouvement (`motion_node`, `scene_publisher_node`, `ExecuteGrasp.srv`) a été supprimée du repo**, pas juste débranchée — à réécrire entièrement pour rebrancher cette étape (cf. roadmap #2).
+
+`pick_task_node._call_service` utilise `call_async` + `threading.Event` (pas de `spin_until_future_complete`), le node tourne sous `MultiThreadedExecutor` — l'ancien anti-pattern de nested spinning est corrigé (cf. dette technique, section historique). Chaque étape échoue proprement avec `success=False` + message si le service précédent échoue ou timeout.
+
+**`pick_task_node` ne valide plus `point_x`/`point_y` nulle part** (l'ancien `task_validator_node` a été supprimé, aucune étape équivalente ne l'a remplacé) — cf. dette technique.
 
 ### Ports ZMQ
 
-| Service | Port | Pattern |
-|---|---|---|
-| camera_bridge → Gemini ER | 5555 | PUB/SUB |
-| GraspGen server | 5556 | REQ/REP |
-| SAM3 server | 5557 | REQ/REP |
-| command_bridge | 5558 | REP (Gemini ER en REQ) |
+| Service | Port | Pattern | Host (côté ROS2) |
+|---|---|---|---|
+| camera_bridge → Gemini ER | 5555 | PUB/SUB | bind `0.0.0.0` |
+| command_bridge ← Gemini ER | 5556 | REP (Gemini ER en REQ) | bind `0.0.0.0` |
+| GraspGen server | 5558 | REQ/REP | connect `127.0.0.1` par défaut (param `graspgen_bridge_host`/`graspgen_bridge_port`, à repasser à `172.22.62.94`/`5556` pour un vrai déploiement LAN) |
+| SAM3 server | 5557 | REQ/REP | connect `127.0.0.1` par défaut (param `sam3_bridge_host`, à repasser à `172.22.62.94` pour un vrai déploiement LAN) |
 
-`camera_bridge_node` et `command_bridge_node` sont packagés ensemble sous `gemini_er_bridge` (même package Python, `share/gemini_er_bridge`) mais restent deux nodes/exécutables ROS2 distincts, chacun avec son propre `zmq.Context`/socket — pas de serveur ZMQ partagé, donc pas de couplage de blocage entre eux (cf. dette nested spinning ci-dessous, qui ne concerne que `command_bridge_node`).
+`command_bridge` et le serveur GraspGen partageaient le port **5556** dans la config LAN d'origine — ce n'était pas un conflit car ce sont deux machines différentes (`command_bridge` bind localement, `graspgen_bridge` se connecte à `172.22.62.94`), mais source de confusion à la lecture des logs/configs. Depuis, `graspgen_bridge_port` a été changé en `5558` pendant le développement local (coïncidence avec l'ancien port de `command_bridge`, qui était lui-même `5558` dans une version antérieure du pipeline avant de passer à `5556`) — donc les deux ports ne se chevauchent plus par défaut aujourd'hui, mais à revérifier lors du retour à la config LAN réelle (`172.22.62.94`/`5556`).
+
+`camera_bridge_node` et `command_bridge_node` sont packagés ensemble sous `gemini_er_bridge` (même package Python, `share/gemini_er_bridge`) mais restent deux nodes/exécutables ROS2 distincts, chacun avec son propre `zmq.Context`/socket — pas de serveur ZMQ partagé, donc pas de couplage de blocage entre eux (cf. dette "stop" ci-dessous, qui ne concerne que `command_bridge_node`).
 
 ### Interfaces ROS2 (`franka_demo_interfaces/srv/`)
 
-`ExecuteTask` (command_bridge/flow_manager→flow_manager, et flow_manager→task_validator), `GetFrames` (→camera_buffer), `SegmentObject` (→sam3_bridge), `FuseMaskDepth` (→pointcloud_node), `GenerateGraspPose` (→graspgen_bridge), `SelectBestGrasp` (→grasp_selector).
+| Service | Client → Serveur | Rôle |
+|---|---|---|
+| `ExecutePickTask` | `command_bridge` → `pick_task_node` | point d'entrée du pipeline |
+| `GetFrames` | `pick_task_node` → `camera_buffer_node` | dernier RGB+depth+camera_info+cloud |
+| `SegmentObject` | `pick_task_node` → `sam3_bridge` | masque de segmentation |
+| `VisualizeSegmentation` | `sam3_bridge_node` → `visualize_segmentation_node` (les deux dans `sam3_bridge`) | overlay RViz, déclenché en interne (fire-and-forget) — `pick_task_node` n'y participe plus |
+| `FilterPointcloud` | `pick_task_node` → `filter_pointcloud_node` | filtre le nuage natif RealSense par masque |
+| `GenerateGraspPose` | `pick_task_node` → `graspgen_bridge` | génération de grasps |
+| `VisualizeGrasps` | `graspgen_bridge_node` → `visualize_grasps_node` (les deux dans `graspgen_bridge`) | markers RViz, déclenché en interne (fire-and-forget) — `pick_task_node` n'y participe plus |
 
 ### Sérialisation ZMQ — piège msgpack / msgpack_numpy
 
 - `sam3_bridge_node.py` : `msgpack.unpackb(raw, raw=False)` → clés `str` (`result["status"]`, `result["mask"]`...). Pas de tableaux numpy dans ce channel (masque transmis en bytes bruts + `mask_shape`).
 - `graspgen_bridge_node.py` : `msgpack.unpackb(raw)` → clés `str` aussi (`result["grasps"]`, `result.get("status")`...) depuis un fix appliqué après un vrai `KeyError: b'grasps'` en test réel. **Ancienne note obsolète, gardée en historique** : ce fichier utilisait avant `result[b"grasps"]` (clés bytes), sous l'hypothèse que `msgpack_numpy` (`m.patch()`, utilisé ici pour sérialiser les `ndarray`) avait besoin de `raw=True`/clés bytes pour son hook de décodage. **Vérifié faux avec la version installée sur ce système** (`msgpack==1.2.1`, où `raw=False` est déjà le défaut de `unpackb()` — testé en direct : `msgpack_numpy` reconstruit correctement les `ndarray` même avec des clés `str`). Si `msgpack` est un jour rétrogradé vers une version pré-1.0 (`raw=True` par défaut), cette hypothèse redeviendrait vraie et il faudrait revenir aux clés bytes — vérifier `msgpack.unpackb(msgpack.packb({'a': 1}))` pour trancher.
 - Ne pas "harmoniser" ces deux fichiers sans vérifier le comportement réel de la version de `msgpack` installée (cf. point précédent).
-- Après un timeout sur un socket ZMQ REQ, il faut fermer et recréer le socket (pattern déjà appliqué dans `_check_sam3_server`/`_check_graspgen_server` au démarrage, **pas** appliqué aux appels normaux — cf. dette technique).
+- Après un timeout sur un socket ZMQ REQ, il faut fermer et recréer le socket — pattern appliqué systématiquement dans `sam3_bridge` et `graspgen_bridge` (santé au démarrage + chaque appel normal, `_recreate_socket()` sur `zmq.Again`).
 - `CONFLATE` incompatible avec `send_multipart` → utiliser `SNDHWM`/`RCVHWM=1`.
 - `setsockopt(zmq.SUBSCRIBE, b"rgb")` avec des `bytes`, pas une `str`.
 - `connect("tcp://127.0.0.1:5555")`, pas `localhost`.
@@ -114,8 +183,8 @@ Le pipeline `flow_manager_node._handle_pick` est entièrement synchrone (`_call_
 ### Convention de coordonnées
 
 - Pixels bruts dans la résolution native caméra (1280×720 par défaut D455) — `point_x`/`point_y` transitent tels quels de Gemini ER jusqu'à SAM3, aucune remise à l'échelle nulle part dans le pipeline.
-- GraspGen retourne les poses dans `camera_color_optical_frame`.
-- MoveIt2 attend des poses dans `fr3_link0` → transform TF2 nécessaire après calibration main-œil (non fait, cf. roadmap).
+- GraspGen retourne les poses dans le frame du cloud envoyé (`request.object_cloud.header.frame_id`, hérité de `frame.depth.header.frame_id` — `camera_color_optical_frame` en pratique puisque le depth est aligné à la couleur).
+- Il n'y a plus de code de transform caméra→robot dans le repo (l'ancien `motion_node` avait une matrice codée en dur, calibrée pour Isaac Sim — supprimée avec le node). À réintroduire via une vraie calibration main-œil (roadmap #1) quand l'exécution du mouvement sera réécrite.
 
 ### Environnements
 
@@ -126,63 +195,77 @@ Le pipeline `flow_manager_node._handle_pick` est entièrement synchrone (`_call_
 | conda `GraspGen` | Serveur GraspGen | CUDA requis |
 | conda `SAM3` | Serveur SAM3 | CUDA requis |
 
-### Note environnement VS Code
-
-`.vscode/settings.json` référence à la fois `franka_pick_interfaces` et `franka_demo_interfaces` dans les chemins d'intellisense — probablement un reliquat d'un renommage de package. Le package réel est `franka_demo_interfaces`. Sans impact sur le build, mais source de confusion si des artefacts `install/franka_pick_interfaces` traînent.
-
 ## Roadmap (non fait)
 
-### 1. Hand-eye calibration (eye-on-base)
-AprilTag `tag36h11` ID 0 fixé sous la bride FR3, `apriltag_ros` + `easy_handeye2`, calibration `eye_on_hand:=false` avec `robot_base_frame:=fr3_link0`, `robot_effector_frame:=fr3_hand_tcp`, `tracking_base_frame:=camera_color_optical_frame`. 15+ échantillons avec poses variées. Générer un `static_transform_publisher` `fr3_link0`→`camera_color_optical_frame` à ajouter dans `flow_manager.launch.py`.
+### 1. Hand-eye calibration (eye-on-base) — toujours non fait
+AprilTag `tag36h11` ID 0 fixé sous la bride FR3, `apriltag_ros` + `easy_handeye2`, calibration `eye_on_hand:=false` avec `robot_base_frame:=fr3_link0`, `robot_effector_frame:=fr3_hand_tcp`, `tracking_base_frame:=camera_color_optical_frame`. 15+ échantillons avec poses variées. Le résultat alimentera le transform caméra→robot dont aura besoin la future implémentation de l'exécution du mouvement (cf. #2) — idéalement via un `static_transform_publisher` TF2 plutôt qu'une constante Python codée en dur (l'ancienne approche, supprimée avec `motion_node`).
 
-### 2. Intégration MoveIt2 dans flow_manager
-- Tester `test_moveit.py` avec `franka_fr3_moveit_config` en fake hardware.
-- Ajouter `_transform_to_robot_frame()` (TF2) et `_execute_moveit()` (`moveit_py`) dans `flow_manager_node`.
-- Dépendances `tf2_ros`/`tf2_geometry_msgs` dans `flow_manager/package.xml`.
-- Launcher MoveIt2 dans `flow_manager.launch.py`.
-- Ouverture/fermeture gripper via actions `franka_gripper`.
+### 2. Exécution du mouvement (MoveIt2) — à réécrire depuis zéro
+L'ancienne implémentation (`motion_node.py`, `scene_publisher_node.py`, `ExecuteGrasp.srv`) a été **entièrement supprimée du repo** : le pipeline s'arrête désormais à la génération/visualisation des grasp poses (cf. "Architecture"). Elle utilisait l'action `/move_action` (`moveit_msgs/MoveGroup`) + gripper via `/panda_hand_controller/gripper_cmd`, avec des noms de frame/groupe Panda (`panda_arm`, `panda_hand`, `panda_link0`) hérités d'une calibration Isaac Sim — pas la convention FR3 (`fr3_arm`, `fr3_hand`, `fr3_link0`...). En la réécrivant : utiliser les bons noms FR3 dès le départ, prévoir le lancement d'un `move_group` réel (rien ne le fournit dans `franka_demo_bringup`), et rebrancher `/execute_grasp` dans `pick_task_node.handle_pick_task` une fois prête.
 
 ### 3. Tests pipeline complet
-Test bout-en-bout avec `gemini_er_simulator.py`, validation visuelle RViz, puis test sur robot réel après calibration.
+Test bout-en-bout avec `gemini_er_simulator.py`, validation visuelle RViz jusqu'à la génération de grasp (l'exécution du mouvement n'existe plus, cf. #2), puis test sur robot réel après calibration et réécriture de l'exécution.
 
-### 4. Objets de collision dans la planning scene (sol, murs)
-Actuellement aucun obstacle statique déclaré : `move_group`/OMPL ne connaît que le robot lui-même, rien n'empêche de planifier une trajectoire qui traverserait le sol ou un mur. À ajouter via `PlanningSceneInterface::applyCollisionObject()` (formes primitives `shape_msgs/SolidPrimitive`, ex. boîte plate pour le sol en z=0, boîte fine verticale pour un mur), une fois au démarrage — pas besoin de le repasser à chaque `MoveToPose`, la scène persiste tant que `move_group` tourne. Concerne aussi bien `fp3_motion_server` que `panda_motion_server`. À ne pas confondre avec le warning `"planning volume was not specified"` déjà présent dans les logs, qui concerne les `workspace_parameters` (région d'échantillonnage OMPL), pas les objets de collision.
+### 4. Objets de collision dans la planning scene — à refaire
+L'ancien `scene_publisher_node` (plan de sol statique) a été supprimé avec le reste du code MoveIt2 (cf. #2). À réintroduire en même temps que l'exécution du mouvement : sol + murs/obstacles latéraux via `PlanningSceneInterface`/`shape_msgs/SolidPrimitive`. À ne pas confondre avec le warning `"planning volume was not specified"` dans les logs, qui concerne les `workspace_parameters` (région d'échantillonnage OMPL), pas les objets de collision.
 
 ### 5. Vraie API Gemini Robotics-ER : conversion de coordonnées à ajouter
-`gemini_er_simulator.py` (dans `~/Documents/FP3/GeminiRoboticsER/`) envoie aujourd'hui des pixels bruts (clic OpenCV direct, cf. "Convention de coordonnées" plus haut) — cohérent de bout en bout avec `task_validator`/`sam3_bridge`/serveur SAM3, vérifié dans le code (SAM3 attend des pixels et normalise lui-même en interne via `point_x / W`, `point_y / H`). `main.py` ne fait encore qu'appeler ce simulateur, aucun appel réel à l'API Gemini pour l'instant.
+`gemini_er_simulator.py` (dans `~/Documents/FP3/GeminiRoboticsER/`) envoie aujourd'hui des pixels bruts (clic OpenCV direct, cf. "Convention de coordonnées" plus haut) — cohérent de bout en bout avec `sam3_bridge`/serveur SAM3, vérifié dans le code (SAM3 attend des pixels et normalise lui-même en interne via `point_x / W`, `point_y / H`). `main.py` ne fait encore qu'appeler ce simulateur, aucun appel réel à l'API Gemini pour l'instant.
 
-Le vrai modèle Gemini Robotics-ER (une fois branché à la place du simulateur) retourne ses coordonnées de pointing normalisées sur une échelle **0-1000**, pas en pixels bruts. Il faudra donc ajouter une conversion (`x_pixel = x_gemini / 1000 * largeur_image`, idem en y) quelque part avant que le point atteigne `task_validator`/`sam3_bridge` — rien dans le pipeline actuel ne le fait, à ajouter à ce moment-là (pas urgent tant que c'est le simulateur qui pilote).
+Le vrai modèle Gemini Robotics-ER (une fois branché à la place du simulateur) retourne ses coordonnées de pointing normalisées sur une échelle **0-1000**, pas en pixels bruts. Il faudra donc ajouter une conversion (`x_pixel = x_gemini / 1000 * largeur_image`, idem en y) quelque part avant que le point atteigne `sam3_bridge` — rien dans le pipeline actuel ne le fait, à ajouter à ce moment-là (pas urgent tant que c'est le simulateur qui pilote).
 
 ## Dette technique identifiée — à traiter
 
 ### Critique
-- ~~**ZMQ REQ sans timeout hors health-check**~~ **✅ Corrigé** : `sam3_bridge` et `graspgen_bridge` utilisent désormais `RCVTIMEO` (30 s / 60 s) + recreate-socket (`linger=0`) après chaque timeout `zmq.Again`. Le health-check de `graspgen_bridge` recrée aussi le socket s'il timeout au démarrage (bug EFSM corrigé).
-- **`task_type: "stop"` ne peut rien interrompre** : `command_bridge` utilise un socket REP à alternance stricte et `_handle_command` bloque tout le node pendant un pick → un "stop" ne peut pas être reçu avant la fin du pick en cours. Problème de sécurité une fois MoveIt2 branché (bras en mouvement).
-- **Nested spinning** (`spin_until_future_complete` dans `_call_service`, boucle `spin_once` dans `command_bridge_node._handle_command`) : anti-pattern ROS2 (risque de réentrance/deadlock). Passer à un `MultiThreadedExecutor` + callbacks async permettrait aussi de fixer le point "stop" ci-dessus.
-
-### Incohérence d'API
-- **`GenerateGraspPose.srv` : `max_grasps` et `gripper_type` ignorés.** `flow_manager_node` envoie `grasp_req.max_grasps = 10` et `gripper_type = "franka_panda"`, mais `graspgen_bridge_node.handle_generate_grasp_pose` ne lit jamais ces champs — il utilise ses propres paramètres de lancement (`num_grasps`, `topk_num_grasps`). À corriger (lire la requête) ou à retirer du `.srv`.
+- **Pas d'exécution du mouvement** : cf. roadmap #2, à réécrire entièrement (attention au mismatch de noms Panda vs FR3 dans l'ancienne implémentation supprimée). Pas un blocage pour l'usage courant du pipeline (qui s'arrête à la génération de grasp), mais à traiter avant d'aller plus loin.
+- **`task_type: "stop"` ne peut rien interrompre** : `command_bridge` utilise un socket REP à alternance stricte et `_handle_pick_command` bloque le thread ZMQ dédié pendant tout un pick → un "stop" ne peut pas être reçu avant la fin du pick en cours. Toujours vrai malgré le passage à `MultiThreadedExecutor`/callbacks async côté `pick_task_node` (ce refactor a supprimé le risque de deadlock ROS2, mais pas la contrainte d'alternance stricte du socket ZMQ REP). Problème de sécurité tant que le bras peut être en mouvement pendant l'attente.
+- **`pick_task_node` ne valide plus `point_x`/`point_y`** : l'ancien `task_validator_node` (qui au moins bornait `< 0`) a été retiré du pipeline sans équivalent de remplacement — un point hors image ou aberrant passe désormais silencieusement jusqu'à SAM3.
+- **⚠️ Régression : `camera_buffer_node` n'a plus aucune vérification de synchronisation RGB/depth.** Le check qui rejetait `handle_get_frames` si `rgb`/`depth` étaient désynchronisés de plus de 100ms (`_SYNC_TOLERANCE_S`, comparaison de `header.stamp`) a disparu du code à un moment de ce chantier, sans suppression volontaire ni changement d'architecture qui l'expliquerait (contrairement aux autres suppressions de ce repo, toutes documentées et délibérées). `handle_get_frames` renvoie désormais `success=True` dès que les 4 buffers (`rgb`/`depth`/`camera_info`/`cloud`) sont non-`None`, sans jamais comparer leurs timestamps entre eux — un `depth` arbitrairement plus vieux que le `rgb` (caméra qui rame, republish partiel) passerait silencieusement jusqu'à SAM3 et au filtrage du nuage. À restaurer si ce n'est pas un choix délibéré.
 
 ### Important
-- **`task_validator_node`** : borne seulement `point_x`/`point_y` par le bas (`< 0`), pas de vérification contre la résolution native (1280×720) → un point hors image passe silencieusement jusqu'à SAM3.
-- **`camera_buffer_node`** : pas de vérification de fraîcheur ni de synchronisation temporelle entre `last_rgb`/`last_depth`/`last_camera_info`. Si la caméra se déconnecte, le pipeline continue avec des frames obsolètes sans erreur.
-- **Duplication du pattern health-check ZMQ** : `sam3_bridge` (retry loop 10 tentatives) et `graspgen_bridge` (une tentative, simple warning) divergent pour la même logique. Factoriser dans une classe utilitaire partagée réduirait le risque d'incohérence (cf. piège msgpack ci-dessus, spécifique à chaque bridge).
+- **`filter_pointcloud_node` suppose que le nuage natif RealSense (`/camera/camera/depth/color/points`, bufferisé par `camera_buffer_node`) est organisé et indexé pixel-à-pixel comme l'image couleur** (même `height`×`width` que le masque SAM3) dès lors que `align_depth.enable:=true` et `pointcloud.enable:=true` sont actifs ensemble — comportement standard du wrapper `realsense2_camera` mais jamais vérifié en direct sur ce setup (pas de RealSense branchée dans cet environnement de dev). Un mismatch de shape est détecté et rejeté proprement (`response.success=False`), mais à confirmer visuellement (RViz + `ros2 topic echo --once` sur le topic pour comparer `height`/`width` à la résolution couleur) dès que le matériel est disponible.
 
 ### Nice-to-have
-- ~~`graspgen_bridge_node._rotation_matrix_to_quaternion`~~ **✅ Corrigé** : remplacé par `scipy.spatial.transform.Rotation.from_matrix(R).as_quat()`.
-- Aucun test unitaire sur la logique métier pure (validation dans `task_validator`, déprojection dans `pointcloud_node`) — testable sans ROS2, à ajouter avant de complexifier avec MoveIt2.
 - `camera_bridge` bind sur `tcp://*:5555` (toutes interfaces), aucune authentification sur les sockets ZMQ — acceptable si LAN fermé de labo, à garder en tête si le setup évolue.
+- **Nommage incohérent du champ d'erreur dans les `.srv`** : la plupart des services utilisent `string message` en réponse (`GetFrames`, `FilterPointcloud`, `VisualizeSegmentation`, `VisualizeGrasps`), mais `SegmentObject` et `GenerateGraspPose` utilisent `string error_msg` à la place — même rôle, deux noms différents selon le fichier. Sans impact fonctionnel (chaque node/client utilise le bon nom du bon côté), mais source de confusion à la lecture/l'écriture d'un nouveau client. À harmoniser sur un seul nom si ces interfaces sont retouchées.
+- `franka_demo_interfaces/package.xml` : maintainer encore au placeholder `you@example.com`/`you` (jamais renseigné, contrairement aux autres packages). `version` à `0.1.0` alors que tous les autres packages sont restés à `0.0.0` — incohérence mineure de méta-données.
+- `graspgen_bridge/package.xml`+`setup.py` : `description` encore à `TODO: Package description`, `maintainer`/`maintainer_email` encore aux placeholders `ngr`/`ngr@todo.todo` — seul package du repo où ni la description ni le mainteneur n'ont été renseignés (les autres ont au moins une vraie description, et `nour.el.bachari@accenture.com` comme mainteneur).
+- `license` à `TODO: License declaration` dans 4 des 6 packages (`franka_demo_bringup`, `gemini_er_bridge`, `graspgen_bridge`, `sam3_bridge`) — seuls `franka_demo_interfaces` et `robot_task_manager` ont `Apache-2.0`. Pas un vrai choix de licence délibéré, juste ce qui existait déjà avant ce chantier (cf. discussion précédente sur pourquoi `franka_demo_bringup` a hérité d'`Apache-2.0` au départ, depuis repassé à `TODO` par une édition externe).
 
 ## Améliorations nodes — à faire plus tard
 
 ### `command_bridge_node` (`gemini_er_bridge/command_bridge_node.py`)
-- **`task_type` absent vs non supporté** : si le champ `task_type` manque complètement, `command.get('task_type')` retourne `None` et le log dit "Unsupported task_type: 'None'" — trompeur. Distinguer les deux cas explicitement.
-- **Arrêt propre du thread ZMQ** : quand `destroy_node()` ferme le socket, `recv()` lève une `ZMQError` et le thread sort — mais si un message est en cours de traitement (pick long), le thread peut être tué brutalement. Ajouter un flag `_shutdown` pour sortir proprement.
-- **`wait_for_service` bloque le thread ZMQ** : pendant 5 secondes si le service est indisponible, Gemini ER attend sans réponse ni timeout côté client. Réduire ce timeout ou le supprimer si le service est garanti présent au démarrage.
+- **`task_type` absent vs non supporté** : si le champ `task_type` manque complètement, `command.get('task_type')` retourne `None` et le log dit "Unsupported task_type : 'None'" — trompeur. Distinguer les deux cas explicitement.
 - **Pas de log de connexion client** : ZMQ REP ne notifie pas les connexions/déconnexions — impossible de savoir si Gemini ER est connecté ou non sans recevoir un message.
 
 ### `camera_bridge_node` (`gemini_er_bridge/camera_bridge_node.py`)
 - **QoS** : subscriber en `RELIABLE` depth=10. Testé et fonctionnel avec la vraie RealSense D455 et Isaac Sim — ne pas changer sans raison.
-- ~~**SNDHWM=1**~~ **✅ Corrigé** : `socket.setsockopt(zmq.SNDHWM, 1)` ajouté avant le `bind()`. Les frames s'accumulent plus en buffer si Gemini ER est lent.
-- ~~**Watchdog / log de frames**~~ **✅ Corrigé** : timer toutes les 5 s, log `WARN` si aucune frame reçue depuis >5 s.
 - **Validation `jpeg_quality`** : si la valeur passée est hors 0–100, OpenCV peut planter silencieusement. Ajouter un clamp ou une vérification au démarrage.
+
+## Historique (dette résolue depuis la dernière révision de ce document)
+
+- Migration `flow_manager` → `robot_task_manager` (renommage de node également : `flow_manager_node` → `pick_task_node`).
+- `grasp_selector_node`/`task_validator_node` supprimés, remplacés par `visualize_grasps_node`/`visualize_segmentation_node` (la logique de validation n'a pas été portée — cf. dette technique ci-dessus).
+- MoveIt2 implémenté (`motion_node.py`) puis retiré à nouveau (cf. entrées plus bas) — plus un TODO "jamais fait", mais un chantier à reprendre.
+- Nested spinning (`spin_until_future_complete`) éliminé dans `pick_task_node` : tourne sous `MultiThreadedExecutor` + `ReentrantCallbackGroup`, `_call_service` utilise `call_async` + `threading.Event`.
+- `command_bridge_node` : `wait_for_service` bloquant remplacé par `service_is_ready()` non-bloquant ; flag `_shutdown` ajouté pour un arrêt propre du thread ZMQ.
+- `camera_buffer_node` : vérification de synchronisation temporelle RGB/depth ajoutée (mais staleness globale toujours pas couverte, cf. dette technique).
+- `GenerateGraspPose.srv` : champs `max_grasps`/`gripper_type` retirés (l'incohérence "champs ignorés côté serveur" n'existe plus).
+- Launch file déplacé de `robot_task_manager/launch/` vers le nouveau package `franka_demo_bringup/launch/franka_demo.launch.py`.
+- Branche Isaac Sim (`panda_motion_server`) et argument `use_sim` retirés du launch, RealSense n'est plus derrière un `UnlessCondition`.
+- `motion_node.py`, `scene_publisher_node.py` et `ExecuteGrasp.srv` **supprimés du repo** (pas juste débranchés) ; `pick_task_node.handle_pick_task` n'appelle plus `/execute_grasp` — le pipeline s'arrête désormais volontairement après la génération/visualisation des grasp poses (cf. "Architecture", roadmap #2).
+- `robot_task_manager` a maintenant son propre launch file (`launch/robot_task_manager.launch.py`), qui démarre tous les nodes ROS2 du pipeline (bridges `gemini_er_bridge`/`sam3_bridge`/`graspgen_bridge` compris). `franka_demo_bringup/launch/franka_demo.launch.py` ne fait plus que démarrer RealSense et inclure ce launch file — les `Node()` des bridges qui y étaient directement listés ont été déplacés dans `robot_task_manager.launch.py`.
+- `graspgen_bridge_node._rotation_matrix_to_quaternion` remplacé par `scipy.spatial.transform.Rotation.from_matrix(R).as_quat()`.
+- `camera_bridge` : `SNDHWM=1` + watchdog de fraîcheur des frames (log `WARN` si aucune frame depuis >5s/10s).
+- `.vscode/settings.json` (reliquat `franka_pick_interfaces`) n'existe plus dans le repo.
+- `franka_demo_bringup/package.xml` : `exec_depend` redondants sur `gemini_er_bridge`/`sam3_bridge`/`graspgen_bridge` retirés — son launch file ne les référence plus directement (démarrés transitivement via `robot_task_manager.launch.py`, qui a déjà ses propres `exec_depend` dessus).
+- `visualize_segmentation_node` déplacé du package `robot_task_manager` vers `sam3_bridge` (reste un node/service ROS2 séparé, `VisualizeSegmentation.srv` conservé) — mais son appelant change : ce n'est plus `pick_task_node` qui appelle `/visualize_segmentation`, c'est `sam3_bridge_node` lui-même (`_trigger_visualization`, fire-and-forget via `call_async`+`add_done_callback`, sans bloquer) juste après avoir reçu le masque de SAM3 dans `handle_segment_object`. `pick_task_node` n'a plus de client ni d'appel vers ce service (client + méthode `_visualize_segmentation` retirés). `robot_task_manager.launch.py` lançait alors les deux nodes de `sam3_bridge` (`sam3_bridge_node` + `visualize_segmentation_node`) directement en `Node()` (cf. entrée plus bas pour le passage ultérieur à `IncludeLaunchDescription` du launch file propre à `sam3_bridge`). `cv_bridge` ajouté aux dépendances de `sam3_bridge` — au passage, ce n'était pas uniquement pour `visualize_segmentation_node` : `sam3_bridge_node.py` l'utilisait déjà (`CvBridge()` pour encoder/décoder les masques) sans jamais le déclarer dans `package.xml`, un manque préexistant corrigé du même coup. (Une piste intermédiaire de fusion complète dans `sam3_bridge_node`, sans node séparé, a été explorée puis abandonnée au profit de ce découpage à deux nodes.)
+- `camera_buffer_node` bufferise maintenant aussi le nuage natif RealSense (`/camera/camera/depth/color/points`) et le renvoie dans `GetFrames.srv` (champ `cloud`) — capturé au même instant que rgb/depth/camera_info, au lieu d'être récupéré séparément par `filter_pointcloud_node` après le round-trip SAM3 (correction d'un désalignement temporel masque/nuage, cf. "Architecture"). `FilterPointcloud.srv` prend désormais `cloud` en requête ; `filter_pointcloud_node` n'a plus de subscription ROS2 propre, il ne fait plus que filtrer le nuage reçu.
+- `sam3_bridge` a maintenant son propre launch file (`launch/sam3_bridge.launch.py`, démarre `sam3_bridge_node` + `visualize_segmentation_node`), utilisable isolément via `ros2 launch sam3_bridge sam3_bridge.launch.py`. `robot_task_manager.launch.py` a été corrigé pour l'**inclure** (`IncludeLaunchDescription`) au lieu de lister ces deux `Node()` directement — même pattern imbriqué que `franka_demo_bringup` → `robot_task_manager`. `gemini_er_bridge` reste listé directement (pas de launch file dédié pour l'instant), `graspgen_bridge` a reçu le même traitement juste après (cf. entrée suivante).
+- `filter_pointcloud_node` ne déprojette plus manuellement depth+intrinsèques `K` : la RealSense génère elle-même le nuage 3D (`pointcloud.enable:=true` ajouté au launch, en plus de `align_depth.enable:=true`), `filter_pointcloud_node` s'y abonne et filtre par le masque SAM3 via indexation directe du nuage organisé. `FilterPointcloud.srv` simplifié en conséquence (`depth`/`camera_info` retirés de la requête, ne reste que `mask`).
+- `visualize_grasps_node` déplacé du package `robot_task_manager` vers `graspgen_bridge`, exactement selon le même pattern que `visualize_segmentation_node`/`sam3_bridge` : node/service ROS2 séparé conservé (`VisualizeGrasps.srv` inchangé), mais appelé par `graspgen_bridge_node` lui-même (`_trigger_visualization`, fire-and-forget via `service_is_ready()` + `call_async`/`add_done_callback`) juste après avoir construit sa réponse dans `handle_generate_grasp_pose`, plutôt que par `pick_task_node` (client + méthode `_visualize_grasps` retirés de `pick_task_node`). `visualization_msgs` déplacé de `robot_task_manager/package.xml` vers `graspgen_bridge/package.xml` (plus aucun autre usage dans `robot_task_manager` après le déplacement). `graspgen_bridge` a aussi reçu son propre launch file (`launch/graspgen_bridge.launch.py`, démarre `graspgen_bridge_node` + `visualize_grasps_node`, utilisable isolément via `ros2 launch graspgen_bridge graspgen_bridge.launch.py`), et `robot_task_manager.launch.py` a été corrigé pour l'inclure via `IncludeLaunchDescription` au lieu de lister ces deux `Node()` directement.
+- `sam3_bridge_node` a maintenant un health-check au démarrage (`_check_sam3_server`, non-bloquant, même pattern que `_check_graspgen_server` dans `graspgen_bridge` : envoie `{'action': 'health'}`, attend jusqu'à 3s, `warn` + `_recreate_socket()` si `zmq.Again`) — l'incohérence entre les deux bridges notée en dette technique est résolue. **Non vérifié contre le vrai protocole du serveur SAM3** (code externe, hors de ce repo) : si le serveur SAM3 ne comprend pas `{'action': 'health'}`, le check le détectera quand même (`warn` sur statut inattendu ou timeout) sans rien casser, mais à confirmer/adapter dès qu'un test en conditions réelles est possible.
+- `_trigger_visualization` (dans `sam3_bridge_node` **et** `graspgen_bridge_node`) utilisait `wait_for_service(timeout_sec=5.0)` (bloquant, jusqu'à 5s) pour vérifier la disponibilité du service de visualisation avant l'appel fire-and-forget — régression introduite après coup dans les deux fichiers, qui allait à l'encontre de l'objectif du design fire-and-forget (ne jamais ajouter de latence sur le chemin critique du pick). Remplacé dans les deux fichiers par `service_is_ready()` (non-bloquant, retourne juste `True`/`False` sans attendre), log inchangé (`error` "Service ... not available").
+- `graspgen_bridge_host`/`graspgen_bridge_port` par défaut changés `172.22.62.94`/`5556` → `127.0.0.1`/`5558` pendant le développement local (même pattern que `sam3_bridge_host`) — CLAUDE.md racine mis à jour (table des ports ZMQ, flux du pick), le narratif "port 5556 partagé avec `command_bridge`" ne concerne donc plus la config par défaut actuelle. `m.patch()` (activation `msgpack_numpy`) déplacé du niveau module vers `GraspGenBridgeNode.__init__`.
+- `CreatePointcloud.srv` renommé en `FilterPointcloud.srv` (service `create_pointcloud` → `filter_pointcloud`) : le node ne crée plus de nuage, il filtre celui reçu en requête (déjà vrai depuis le passage au nuage natif RealSense, cf. entrée plus haut — le nom ne reflétait plus le comportement réel). Renommage propagé partout : `.srv`, `CMakeLists.txt`, import/service côté `filter_pointcloud_node.handle_filter_pointcloud`, client/méthode côté `pick_task_node._filter_pointcloud`. Un rebuild complet de `franka_demo_interfaces` (suppression de `build/`/`install/`/`log/` du package) a été nécessaire pour éliminer les artefacts générés de l'ancien nom, qu'un `colcon build` incrémental ne nettoie pas tout seul.
+- Le node `pointcloud_node` lui-même renommé en `filter_pointcloud_node` (fichier `pointcloud_node.py` → `filter_pointcloud_node.py`, classe `PointcloudNode` → `FilterPointcloudNode`, nom ROS2 du node, entry_point dans `setup.py`, `Node()` dans `robot_task_manager.launch.py`) — même logique que le renommage du service, pour rester cohérent de bout en bout. Même mésaventure d'artefacts périmés que pour `franka_demo_interfaces` : `build/`/`install/`/`log/` de `robot_task_manager` nettoyés pour faire disparaître l'ancien exécutable `pointcloud_node` de `install/`.

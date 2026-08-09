@@ -9,4 +9,4 @@ sensor_msgs/Image mask
 float32 score
 bool has_mask
 bool success
-string error_msg
+string message

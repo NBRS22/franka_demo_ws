@@ -1,16 +1,14 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>sam3_bridge</name>
+  <name>franka_demo_bringup</name>
   <version>0.0.0</version>
-  <description>Bridge for communicating with the SAM3 system</description>
+  <description>Launch files for the Franka demo</description>
   <maintainer email="nour.el.bachari@accenture.com">nour.el.bachari</maintainer>
   <license>TODO: License declaration</license>
 
-  <depend>rclpy</depend>
-  <depend>sensor_msgs</depend>
-  <depend>franka_demo_interfaces</depend>
-  <depend>cv_bridge</depend>
+  <exec_depend>robot_task_manager</exec_depend>
+  <exec_depend>realsense2_camera</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

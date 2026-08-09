@@ -1,5 +1,0 @@
-sensor_msgs/PointCloud2 object_cloud
-geometry_msgs/Pose grasp_pose
----
-bool success
-string message

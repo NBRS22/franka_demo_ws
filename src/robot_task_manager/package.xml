@@ -3,18 +3,18 @@
 <package format="3">
   <name>robot_task_manager</name>
   <version>0.0.0</version>
-  <description>Orchestrates pick/place tasks for the robot pipeline</description>
-  <maintainer email="nour.el.bachari@accenture.com">nour</maintainer>
+  <description>Orchestrates pick/place tasks</description>
+  <maintainer email="nour.el.bachari@accenture.com">nour.el.bachari</maintainer>
   <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
   <depend>franka_demo_interfaces</depend>
   <depend>sensor_msgs</depend>
   <depend>cv_bridge</depend>
-  <depend>visualization_msgs</depend>
-  <depend>geometry_msgs</depend>
-  <depend>moveit_msgs</depend>
-  <depend>control_msgs</depend>
+
+  <exec_depend>gemini_er_bridge</exec_depend>
+  <exec_depend>sam3_bridge</exec_depend>
+  <exec_depend>graspgen_bridge</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

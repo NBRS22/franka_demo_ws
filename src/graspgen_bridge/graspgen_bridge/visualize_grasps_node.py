@@ -30,7 +30,14 @@ class VisualizeGraspsNode(Node):
                 response.message = "no grasps to visualize"
                 return response
 
-            best_idx = scores.index(max(scores)) if scores else 0
+            if len(grasps) != len(scores):
+                response.success = False
+                response.message = (
+                    f"grasps/scores length mismatch : {len(grasps)} grasps vs {len(scores)} scores"
+                )
+                return response
+
+            best_idx = scores.index(max(scores))
 
             marker_array = MarkerArray()
 

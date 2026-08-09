@@ -11,10 +11,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GetFrames.srv"
   "srv/SegmentObject.srv"
   "srv/VisualizeSegmentation.srv"
-  "srv/CreatePointcloud.srv"
+  "srv/FilterPointcloud.srv"
   "srv/GenerateGraspPose.srv"
   "srv/VisualizeGrasps.srv"
-  "srv/ExecuteGrasp.srv"
   DEPENDENCIES sensor_msgs geometry_msgs
 )
 

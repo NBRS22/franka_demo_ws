@@ -2,14 +2,11 @@ import threading
 import rclpy
 
 from franka_demo_interfaces.srv import (
-    CreatePointcloud,
-    ExecuteGrasp,
     ExecutePickTask,
+    FilterPointcloud,
     GenerateGraspPose,
     GetFrames,
     SegmentObject,
-    VisualizeGrasps,
-    VisualizeSegmentation,
 )
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
@@ -20,16 +17,13 @@ class PickTaskNode(Node):
     def __init__(self):
         super().__init__('pick_task_node')
 
-        cb = ReentrantCallbackGroup()
+        # ROS Service Clients
+        self.frame_client = self.create_client(GetFrames, 'get_frames', callback_group=ReentrantCallbackGroup())
+        self.sam3_client = self.create_client(SegmentObject, 'segment_object', callback_group=ReentrantCallbackGroup())
+        self.filter_pointcloud_client = self.create_client(FilterPointcloud, 'filter_pointcloud', callback_group=ReentrantCallbackGroup())
+        self.graspgen_client = self.create_client(GenerateGraspPose, 'generate_grasp_pose', callback_group=ReentrantCallbackGroup())
 
-        self.frame_client = self.create_client(GetFrames, 'get_frames', callback_group=cb)
-        self.sam3_client = self.create_client(SegmentObject, 'segment_object', callback_group=cb)
-        self.viz_seg_client = self.create_client(VisualizeSegmentation, 'visualize_segmentation', callback_group=cb)
-        self.pointcloud_client = self.create_client(CreatePointcloud, 'create_pointcloud', callback_group=cb)
-        self.graspgen_client = self.create_client(GenerateGraspPose, 'generate_grasp_pose', callback_group=cb)
-        self.viz_grasps_client = self.create_client(VisualizeGrasps, 'visualize_grasps', callback_group=cb)
-        self.execute_grasp_client = self.create_client(ExecuteGrasp, 'execute_grasp', callback_group=cb)
-
+        # ROS Service Servers
         self.create_service(ExecutePickTask, 'execute_pick_task', self.handle_pick_task)
 
         self.get_logger().info('Pick Task Node started')
@@ -54,23 +48,14 @@ class PickTaskNode(Node):
             raise RuntimeError('SAM3 failed')
         if not result.has_mask:
             raise RuntimeError('no mask found')
-        self.get_logger().info(f'Mask received score={result.score:.3f}')
+        self.get_logger().info(f'Mask received score = {result.score:.3f}')
         return result
 
-    def _visualize_segmentation(self, frame, mask_result, point_x, point_y):
-        req = VisualizeSegmentation.Request()
-        req.rgb = frame.rgb
+    def _filter_pointcloud(self, frame, mask_result):
+        req = FilterPointcloud.Request()
         req.mask = mask_result.mask
-        req.point_x = point_x
-        req.point_y = point_y
-        self._call_service(self.viz_seg_client, req, timeout=5.0)
-
-    def _create_pointcloud(self, frame, mask_result):
-        req = CreatePointcloud.Request()
-        req.depth = frame.depth
-        req.mask = mask_result.mask
-        req.camera_info = frame.camera_info
-        result = self._call_service(self.pointcloud_client, req, timeout=10.0)
+        req.cloud = frame.cloud
+        result = self._call_service(self.filter_pointcloud_client, req, timeout=10.0)
         if result is None or not result.success:
             raise RuntimeError(result.message if result else 'pointcloud failed')
         self.get_logger().info(f'Pointcloud ready — {len(result.cloud.data)} bytes')
@@ -82,40 +67,20 @@ class PickTaskNode(Node):
         self.get_logger().info('Calling GraspGen...')
         result = self._call_service(self.graspgen_client, req, timeout=60.0)
         if result is None or not result.success:
-            raise RuntimeError(result.error_msg if result else 'graspgen failed')
+            raise RuntimeError(result.message if result else 'graspgen failed')
         self.get_logger().info(f'{len(result.grasps.poses)} grasps received')
         return result
 
-    def _visualize_grasps(self, grasp_result):
-        req = VisualizeGrasps.Request()
-        req.grasps = grasp_result.grasps
-        req.scores = grasp_result.scores
-        self._call_service(self.viz_grasps_client, req, timeout=5.0)
-
-    def _execute_grasp(self, cloud, grasp_result):
-        scores = list(grasp_result.scores)
-        best_idx = scores.index(max(scores)) if scores else 0
-        best_pose = grasp_result.grasps.poses[best_idx]
-        self.get_logger().info(f'Executing best grasp idx={best_idx} score={scores[best_idx]:.3f}')
-        req = ExecuteGrasp.Request()
-        req.object_cloud = cloud
-        req.grasp_pose = best_pose
-        result = self._call_service(self.execute_grasp_client, req, timeout=120.0)
-        if result is None or not result.success:
-            raise RuntimeError(result.message if result else 'execute_grasp failed')
-
     def handle_pick_task(self, request, response):
-        self.get_logger().info(f"Pick task received: label='{request.object_label}' "f"point=({request.point_x}, {request.point_y})")
+        self.get_logger().info(f"Pick task received : label = '{request.object_label}' "f"point = ({request.point_x}, {request.point_y})")
         try:
             frame = self._get_frames()
             mask = self._segment(frame, request.object_label, request.point_x, request.point_y)
-            self._visualize_segmentation(frame, mask, request.point_x, request.point_y)
-            pc = self._create_pointcloud(frame, mask)
+            pc = self._filter_pointcloud(frame, mask)
             grasps = self._generate_grasps(pc.cloud)
-            self._visualize_grasps(grasps)
-            self._execute_grasp(pc.cloud, grasps)
+            # Execution (motion_node / MoveIt2) not wired in yet — flow stops after grasp generation.
             response.success = True
-            response.message = (f'pick OK — seg={mask.score:.3f} grasps={len(grasps.grasps.poses)}')
+            response.message = (f'pick OK — seg = {mask.score:.3f} grasps = {len(grasps.grasps.poses)}')
         except RuntimeError as e:
             response.success = False
             response.message = str(e)

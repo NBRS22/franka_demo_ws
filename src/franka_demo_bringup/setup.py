@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = 'robot_task_manager'
+package_name = 'franka_demo_bringup'
 
 setup(
     name=package_name,
@@ -10,22 +10,15 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        ('share/' + package_name + '/launch', ['launch/robot_task_manager.launch.py']),
+        ('share/' + package_name + '/launch', ['launch/franka_demo.launch.py']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='nour.el.bachari',
     maintainer_email='nour.el.bachari@accenture.com',
-    description='Orchestrates pick/place tasks',
-    license='Apache-2.0',
+    description='Launch files for the Franka demo',
+    license='TODO: License declaration',
     extras_require={
         'test': ['pytest'],
-    },
-    entry_points={
-        'console_scripts': [
-            'pick_task_node = robot_task_manager.pick_task_node:main',
-            'camera_buffer_node = robot_task_manager.camera_buffer_node:main',
-            'filter_pointcloud_node = robot_task_manager.filter_pointcloud_node:main',
-        ],
     },
 )
