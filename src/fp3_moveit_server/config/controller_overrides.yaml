@@ -1,0 +1,3 @@
+fp3_arm_controller:
+  ros__parameters:
+    allow_nonzero_velocity_at_trajectory_end: true

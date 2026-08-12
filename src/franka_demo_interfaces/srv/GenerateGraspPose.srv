@@ -1,8 +1,0 @@
-sensor_msgs/PointCloud2 object_cloud
-string gripper_type
-int32 max_grasps
----
-geometry_msgs/PoseArray grasps
-float32[] scores
-bool success
-string error_msg

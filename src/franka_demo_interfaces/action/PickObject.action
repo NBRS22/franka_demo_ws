@@ -1,0 +1,9 @@
+geometry_msgs/PoseStamped[] grasp_candidates
+string object_id
+geometry_msgs/Vector3 object_dimensions
+---
+bool success
+string message
+int32 used_pose_index
+---
+string current_stage

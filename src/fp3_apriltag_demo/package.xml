@@ -1,17 +1,24 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>fp3_grasp_demo</name>
+  <name>fp3_apriltag_demo</name>
   <version>0.0.1</version>
-  <description>v1: sends a hardcoded grasp pose to fp3_moveit_server via the MoveToPose action</description>
+  <description>v1: reads one AprilTag detection from /detections, estimates its 3D pose via solvePnP, transforms it into fp3_link0, moves there, closes the gripper, and returns to a ready pose</description>
   <maintainer email="n.elbachari@gmail.com">ngr</maintainer>
   <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
   <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>apriltag_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
   <depend>franka_demo_interfaces</depend>
+  <depend>franka_msgs</depend>
 
   <exec_depend>fp3_moveit_server</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

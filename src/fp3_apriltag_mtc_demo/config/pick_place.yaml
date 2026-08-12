@@ -1,0 +1,39 @@
+/**:
+  ros__parameters:
+    # Full copy of fp3_moveit_server/config/pick_place.yaml, with only the
+    # grasp.* section changed to match this demo's requested grasp
+    # parameters. Kept self-contained (not just a partial override file) so
+    # this package doesn't silently depend on pick_place_node's coded
+    # defaults staying in sync with the upstream yaml.
+    planning_group: "fp3_arm"
+    eef_name: "fp3_hand"
+    hand_group: "fp3_hand"
+    tcp_frame: "fp3_hand_tcp"
+    hand_touch_links: ["fp3_hand", "fp3_leftfinger", "fp3_rightfinger"]
+    gripper_action_name: "/franka_gripper/grasp"
+    gripper_move_action_name: "/franka_gripper/move"
+
+    filter.min_height_above_table: 0.02
+    filter.max_approach_tilt_deg: 45.0
+    filter.max_reach: 0.85
+
+    approach.min_distance: 0.02
+    approach.max_distance: 0.10
+    retreat.min_distance: 0.05
+    retreat.max_distance: 0.15
+
+    grasp.width: 0.06
+    grasp.epsilon_inner: 0.06
+    grasp.epsilon_outer: 0.08
+    grasp.speed: 0.05
+    grasp.force: 70.0
+
+    open.width: 0.08
+    open.speed: 0.1
+
+    # TO ADJUST: placeholder "place" location -- no guarantee it's
+    # reachable/collision-free in your actual scene.
+    place.pose_xyz: [0.4, 0.0, 0.4]
+
+    velocity_scaling_factor: 0.1
+    acceleration_scaling_factor: 0.1

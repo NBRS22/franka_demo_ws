@@ -3,19 +3,12 @@ project(franka_demo_interfaces)
 
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
-find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-  "srv/GenerateGraspPose.srv"
-  "srv/SegmentObject.srv"
-  "srv/ExecuteTask.srv"
-  "srv/GetFrames.srv"
-  "srv/FuseMaskDepth.srv"
-  "srv/SelectBestGrasp.srv"
   "action/MoveToPose.action"
-  "action/GoHome.action"
-  DEPENDENCIES sensor_msgs geometry_msgs
+  "action/PickObject.action"
+  DEPENDENCIES geometry_msgs
 )
 
 ament_export_dependencies(rosidl_default_runtime)

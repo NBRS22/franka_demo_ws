@@ -1,8 +1,9 @@
-from setuptools import find_packages, setup
 import os
 from glob import glob
 
-package_name = 'fp3_grasp_demo'
+from setuptools import find_packages, setup
+
+package_name = 'fp3_apriltag_demo'
 
 setup(
     name=package_name,
@@ -19,7 +20,11 @@ setup(
     zip_safe=True,
     maintainer='ngr',
     maintainer_email='n.elbachari@gmail.com',
-    description='v1: sends a hardcoded grasp pose to fp3_moveit_server via the MoveToPose action',
+    description=(
+        'v1: reads one AprilTag detection from /detections, estimates its 3D pose via '
+        'solvePnP, transforms it into fp3_link0, and sends a single MoveToPose goal to '
+        'fp3_moveit_server'
+    ),
     license='Apache-2.0',
     extras_require={
         'test': [
@@ -28,7 +33,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'hardcoded_grasp_node = fp3_grasp_demo.hardcoded_grasp_node:main',
+            'apriltag_move_once_node = fp3_apriltag_demo.apriltag_move_once_node:main',
         ],
     },
 )

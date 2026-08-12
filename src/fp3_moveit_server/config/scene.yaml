@@ -1,0 +1,8 @@
+/**:
+  ros__parameters:
+    table.frame_id: "fp3_link0"
+    # Centered on the robot base (x=0, y=0); position.z is the box CENTER,
+    # so with dimensions.z=0.1 the table TOP sits exactly at z=0, level with
+    # fp3_link0's own origin (table_top_z = position.z + dimensions.z/2).
+    table.position: [0.0, 0.0, -0.05]
+    table.dimensions: [4.0, 4.0, 0.1]

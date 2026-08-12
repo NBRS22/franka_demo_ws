@@ -44,7 +44,7 @@ class HardcodedGraspNode(Node):
     def _goal_response_callback(self, future):
         goal_handle = future.result()
         if not goal_handle.accepted:
-            self.get_logger().error("Goal rejected by fp3_motion_server")
+            self.get_logger().error("Goal rejected by fp3_moveit_server")
             return
 
         self.get_logger().info("Goal accepted, executing...")
