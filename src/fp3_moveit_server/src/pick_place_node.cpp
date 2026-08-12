@@ -96,6 +96,12 @@ public:
     grasp_epsilon_outer_ = node_->declare_parameter<double>("grasp.epsilon_outer", 0.005);
     grasp_speed_ = node_->declare_parameter<double>("grasp.speed", 0.05);
     grasp_force_ = node_->declare_parameter<double>("grasp.force", 20.0);
+    // Independent of grasp.epsilon_inner/outer (the driver's own
+    // force-detection tolerance, which can legitimately be wide) -- this is
+    // strictly "is the final width plausibly still holding the object",
+    // checked in verifyGrasp() after the grasp action completes.
+    grasp_width_check_tolerance_ =
+      node_->declare_parameter<double>("grasp.width_check_tolerance", 0.01);
 
     move_action_name_ =
       node_->declare_parameter<std::string>("gripper_move_action_name", "/franka_gripper/move");
@@ -174,6 +180,7 @@ private:
   double grasp_epsilon_outer_;
   double grasp_speed_;
   double grasp_force_;
+  double grasp_width_check_tolerance_;
 
   std::string move_action_name_;
   double open_width_;
@@ -357,19 +364,29 @@ private:
     return task.execute(*task.solutions().front()) == moveit::core::MoveItErrorCode::SUCCESS;
   }
 
-  bool closeGripper()
+  struct GraspOutcome
+  {
+    bool driver_success;
+    double final_width;  // -1.0 if never captured (e.g. goal rejected)
+  };
+
+  // Just the physical action: send Grasp, report what the driver itself
+  // says plus the final width it reported via feedback. Does NOT judge
+  // whether that width actually matches the expected object -- see
+  // verifyGrasp(), called separately, strictly after this returns.
+  GraspOutcome closeGripper()
   {
     if (simulate_gripper_) {
       RCLCPP_INFO(
         node_->get_logger(),
         "Closing gripper (simulated, use_fake_hardware): width=%.3f force=%.1f",
         grasp_width_, grasp_force_);
-      return true;
+      return {true, grasp_width_};
     }
 
     if (!grasp_client_->wait_for_action_server(std::chrono::seconds(5))) {
       RCLCPP_ERROR(node_->get_logger(), "Gripper action '%s' unavailable", gripper_action_name_.c_str());
-      return false;
+      return {false, -1.0};
     }
 
     auto goal = Grasp::Goal();
@@ -379,9 +396,9 @@ private:
     goal.speed = grasp_speed_;
     goal.force = grasp_force_;
 
-    // Capture the last feedback's current_width so we can double-check the
-    // grasp actually closed on something roughly the expected size, not
-    // just trust the driver's own success flag blindly.
+    // Capture the last feedback's current_width so verifyGrasp() can
+    // double-check the grasp actually closed on something roughly the
+    // expected size, not just trust the driver's own success flag blindly.
     std::atomic<double> last_width{-1.0};
     rclcpp_action::Client<Grasp>::SendGoalOptions options;
     options.feedback_callback =
@@ -395,7 +412,7 @@ private:
     auto goal_handle = goal_handle_future.get();
     if (!goal_handle) {
       RCLCPP_ERROR(node_->get_logger(), "Gripper rejected the grasp goal");
-      return false;
+      return {false, -1.0};
     }
 
     auto result = grasp_client_->async_get_result(goal_handle).get();
@@ -403,29 +420,51 @@ private:
       RCLCPP_WARN(
         node_->get_logger(), "Grasp action reported failure (final width=%.4f, expected=%.4f)",
         last_width.load(), grasp_width_);
-      return false;
-    }
-
-    // Redundant on top of the driver's own epsilon check (which already
-    // requires the final width to land within
-    // [width-epsilon_inner, width+epsilon_outer] to report success), but
-    // makes the "did we actually grasp something close to the expected
-    // object" verification explicit and logged, not just implicit in a
-    // boolean.
-    const double width = last_width.load();
-    const double tolerance = std::max(grasp_epsilon_inner_, grasp_epsilon_outer_);
-    if (width >= 0.0 && std::abs(width - grasp_width_) > tolerance) {
-      RCLCPP_WARN(
-        node_->get_logger(),
-        "Grasp reported success but final width %.4f is not close to expected %.4f "
-        "(tolerance %.4f) -- treating as a failed grasp",
-        width, grasp_width_, tolerance);
-      return false;
+      return {false, last_width.load()};
     }
 
     RCLCPP_INFO(
-      node_->get_logger(), "Grasp succeeded: final width=%.4f (expected %.4f)",
-      width, grasp_width_);
+      node_->get_logger(), "Grasp action succeeded, reported final width=%.4f", last_width.load());
+    return {true, last_width.load()};
+  }
+
+  // Runs strictly AFTER closeGripper() returns, once the gripper has
+  // actually finished closing: independent double-check that the achieved
+  // width is close to the expected object width, on top of (not instead
+  // of) the driver's own epsilon-window success flag. Catches a
+  // success=true result that isn't actually holding the expected object.
+  //
+  // Deliberately uses its OWN tolerance (grasp_width_check_tolerance_), not
+  // grasp_epsilon_inner_/outer_: those control the *driver's* own
+  // force-detection acceptance window, which can legitimately be wide (a
+  // real grasp needs slack for compliant/slightly-varying objects) --
+  // reusing them here made this check nearly useless. Observed live:
+  // width=0.06, epsilon_inner=0.06 means the driver's own window already
+  // reaches down to a fully-closed 0m, so a grasp that closed on empty air
+  // (final_width=0.0003) was reported "succeeded" by franka_gripper_node
+  // itself, and this check (reusing that same 0.06-0.08 window as
+  // tolerance) rubber-stamped it too. A tight, independent tolerance here
+  // is the only way to actually catch a miss.
+  bool verifyGrasp(double final_width)
+  {
+    if (final_width < 0.0) {
+      // No feedback ever captured (e.g. simulate_gripper_ always reports
+      // grasp_width_ itself, or a genuinely goal-rejected case that already
+      // failed closeGripper()'s own check) -- nothing to compare here.
+      return true;
+    }
+    const double tolerance = grasp_width_check_tolerance_;
+    if (std::abs(final_width - grasp_width_) > tolerance) {
+      RCLCPP_WARN(
+        node_->get_logger(),
+        "Grasp width check failed: final width %.4f is not close to expected %.4f "
+        "(tolerance %.4f) -- object likely missed",
+        final_width, grasp_width_, tolerance);
+      return false;
+    }
+    RCLCPP_INFO(
+      node_->get_logger(), "Grasp width check passed: %.4f (expected %.4f)",
+      final_width, grasp_width_);
     return true;
   }
 
@@ -676,9 +715,19 @@ private:
     }
 
     publish_status(goal_handle, "grasping");
-    if (!closeGripper()) {
+    auto grasp_outcome = closeGripper();
+    if (!grasp_outcome.driver_success) {
       result->success = false;
       result->message = "Gripper failed to grasp the object";
+      RCLCPP_ERROR(node_->get_logger(), "%s", result->message.c_str());
+      goal_handle->abort(result);
+      return;
+    }
+
+    publish_status(goal_handle, "checking");
+    if (!verifyGrasp(grasp_outcome.final_width)) {
+      result->success = false;
+      result->message = "Grasp width does not match the expected object (likely missed)";
       RCLCPP_ERROR(node_->get_logger(), "%s", result->message.c_str());
       goal_handle->abort(result);
       return;

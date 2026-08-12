@@ -102,10 +102,10 @@ actions -- nothing else is allowed to hold a `MoveGroupInterface` or an MTC
 14. **Grasp verified against the expected object width, not just the
     driver's success flag.** `franka_gripper`'s own `Grasp` action already
     does an epsilon-window check internally, but `closeGripper()` now also
-    captures the action's live feedback (`current_width`) and independently
-    confirms it lands within `[grasp.width - tolerance, grasp.width +
-    tolerance]`, logging both. Catches a `success=true` result that isn't
-    actually holding the expected object.
+    captures the action's live feedback (`current_width`), and confirms it
+    lands within `[grasp.width - tolerance, grasp.width + tolerance]`.
+    Catches a `success=true` result that isn't actually holding the
+    expected object.
 15. **Speed capped at 10% by default everywhere this package plans a
     motion** (`velocity_scaling_factor`/`acceleration_scaling_factor`,
     default `0.1`): `MoveGroupInterface` in `motion_server_node`, and both
@@ -113,6 +113,28 @@ actions -- nothing else is allowed to hold a `MoveGroupInterface` or an MTC
     A real-hardware test earlier in this session ran at full (unset, 100%)
     speed -- this closes that gap. Override via parameters if a specific
     goal actually needs more.
+16. **Width check split into its own step, run strictly after the grasp
+    action completes.** Originally the comparison lived inside
+    `closeGripper()` itself; refactored into `closeGripper()` (just the
+    physical action, returns driver success + final width) and a separate
+    `verifyGrasp(width)`, called from `execute()` only after
+    `closeGripper()` has returned -- with its own `checking` feedback
+    stage between `grasping` and `attaching`, so a client can tell "the
+    Grasp action itself failed" (`grasping`) apart from "it reported
+    success but the width doesn't match" (`checking`).
+17. **That width check was reusing the wrong tolerance and couldn't
+    actually catch a miss.** `verifyGrasp()` originally compared against
+    `max(grasp.epsilon_inner, grasp.epsilon_outer)` -- but those control
+    the *driver's own* force-detection acceptance window, which is
+    deliberately wide for compliant objects. Observed live: `grasp.width:
+    0.06` with `grasp.epsilon_inner: 0.06` means franka_gripper's own
+    window already reaches down to a fully-closed 0m, so a grasp that
+    closed on empty air (`final_width=0.0003`) was reported `success=true`
+    by the driver itself, and the (reused-tolerance) check rubber-stamped
+    it too -- `pick_object` returned `SUCCEEDED` for a pick that never
+    grasped anything. Fixed with a new, independent
+    `grasp.width_check_tolerance` parameter (default `0.01` m), used only
+    by `verifyGrasp()`.
 
 ## Why this package exists
 
@@ -165,8 +187,11 @@ Both live on `command_router_node`, type defs in `franka_demo_interfaces`:
 - **`pick_object`** (`PickObject`): full pick-AND-place from a list of grasp
   candidate poses (e.g. from GraspGen, or a client's own orientation
   fallbacks) + object id/dimensions. Feedback: `filtering` -> `opening` ->
-  `planning` -> `approaching` -> `grasping` -> `attaching` -> `retreating` ->
-  `placing` -> `detaching` -> `releasing`. Tries each surviving candidate in
+  `planning` -> `approaching` -> `grasping` -> `checking` -> `attaching` ->
+  `retreating` -> `placing` -> `detaching` -> `releasing`. `grasping` is
+  just the physical `Grasp` action; `checking` is a separate, later step
+  that verifies the achieved width against the expected object (see
+  "pick_place_node internals"). Tries each surviving candidate in
   order for the approach (via a fresh MTC `Task` per candidate: `CurrentState`
   -> `Connect` -> `MoveRelative` (approach) -> `FixedCartesianPoses`+
   `ComputeIK` -> `ModifyPlanningScene` allow-collision), stops at the first
@@ -310,12 +335,13 @@ edited.
   `pick_object` reports failure once and stops; it does not retry
   internally (it has no camera/tag access to get a fresh candidate anyway).
   `fp3_apriltag_mtc_demo` re-scans and retries client-side, but only when
-  the failure happened specifically at the `grasping` feedback stage (the
-  gripper closed but the width didn't match the expected object) --
-  earlier-stage failures (filtering/IK) mean the candidate pose itself was
-  bad, so a rescan just repeats it; later-stage failures (after a
-  successful grasp) mean the object may still be held, so retrying would
-  mean re-approaching with something already in the gripper.
+  the failure happened at the `grasping` or `checking` feedback stage (the
+  `Grasp` action itself failed, or it reported success but the achieved
+  width didn't match the expected object) -- earlier-stage failures
+  (filtering/IK) mean the candidate pose itself was bad, so a rescan just
+  repeats it; later-stage failures (after a successful grasp) mean the
+  object may still be held, so retrying would mean re-approaching with
+  something already in the gripper.
 
 ## Running it
 

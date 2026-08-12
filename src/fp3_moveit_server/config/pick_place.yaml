@@ -22,6 +22,13 @@
     grasp.epsilon_outer: 0.005
     grasp.speed: 0.05
     grasp.force: 20.0
+    # Independent of epsilon_inner/outer above (the driver's own
+    # force-detection tolerance): this is the tolerance for verifyGrasp()'s
+    # post-grasp width check. Keep this tight -- reusing a wide grasp
+    # epsilon here defeats the check (observed live: width=0.06,
+    # epsilon_inner=0.06 let a grasp that closed on empty air, width~0,
+    # pass as "close enough").
+    grasp.width_check_tolerance: 0.01
 
     open.width: 0.08
     open.speed: 0.1

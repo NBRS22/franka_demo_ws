@@ -59,21 +59,23 @@ def rotation_matrix_to_quaternion(r):
 # does nothing but detect, transform, and hand off a single goal.
 class AprilTagPickOnceNode(Node):
 
-    # Retry-with-rescan triggers on exactly one condition: the gripper
-    # closed but pick_place_node's width check (closeGripper() in
-    # pick_place_node.cpp) found the final width didn't match the expected
-    # object -- i.e. the gripper closed on nothing or missed. That's the one
-    # failure a fresh scan can plausibly fix (the object may have shifted
-    # slightly, or the first read was a little off). It's identified as the
-    # last feedback stage still being 'grasping' when the result comes back
-    # (pick_place_node aborts immediately on grasp failure, before ever
-    # publishing 'attaching'). Every earlier failure (filtering, approach/IK)
-    # means the candidate pose itself was unreachable/rejected -- rescanning
-    # gives essentially the same pose again and just repeats the same
-    # failure (observed live: a tag sitting just past filter.max_reach kept
-    # failing 'filtering' 3 times in a row for no benefit). Those are
-    # reported once and NOT retried, same as any post-grasp failure.
-    RETRY_STAGE = 'grasping'
+    # Retry-with-rescan triggers once the gripper has actually attempted to
+    # close: either the Grasp action itself failed (last stage still
+    # 'grasping' when the result comes back), or -- the case this was
+    # specifically built for -- it reported success but
+    # pick_place_node's separate post-grasp width check (verifyGrasp() in
+    # pick_place_node.cpp, run strictly AFTER closeGripper() returns, its
+    # own 'checking' feedback stage) found the final width didn't match the
+    # expected object, i.e. the gripper closed on nothing or missed. Both
+    # are failures a fresh scan can plausibly fix (the object may have
+    # shifted slightly, or the first read was a little off).
+    # Every earlier failure (filtering, approach/IK) means the candidate
+    # pose itself was unreachable/rejected -- rescanning gives essentially
+    # the same pose again and just repeats the same failure (observed live:
+    # a tag sitting just past filter.max_reach kept failing 'filtering' 3
+    # times in a row for no benefit). Those are reported once and NOT
+    # retried, same as any post-grasp (attaching onward) failure.
+    RETRY_STAGES = frozenset({'grasping', 'checking'})
 
     def __init__(self):
         super().__init__('apriltag_pick_once_node')
@@ -284,7 +286,7 @@ class AprilTagPickOnceNode(Node):
             rclpy.shutdown()
             return
 
-        if self._last_stage != self.RETRY_STAGE:
+        if self._last_stage not in self.RETRY_STAGES:
             if self._last_stage in ('attaching', 'retreating', 'placing', 'detaching', 'releasing'):
                 self.get_logger().error(
                     f"Failure happened after a successful grasp (last stage: "
@@ -307,7 +309,7 @@ class AprilTagPickOnceNode(Node):
             return
 
         self.get_logger().warn(
-            f'Grasp closed but width check failed (attempt {self._attempt}/'
+            f"Grasp attempt failed at stage '{self._last_stage}' (attempt {self._attempt}/"
             f'{self.max_attempts}), re-scanning for the tag and retrying...')
         self._done = False
         self._search_timer.reset()

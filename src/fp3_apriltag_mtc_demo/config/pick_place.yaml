@@ -27,6 +27,9 @@
     grasp.epsilon_outer: 0.08
     grasp.speed: 0.05
     grasp.force: 70.0
+    # Independent of epsilon_inner/outer above -- see
+    # fp3_moveit_server/config/pick_place.yaml for why. Keep tight.
+    grasp.width_check_tolerance: 0.01
 
     open.width: 0.08
     open.speed: 0.1
