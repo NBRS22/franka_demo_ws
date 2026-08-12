@@ -1,0 +1,18 @@
+# Artefacts de build colcon — régénérés par `colcon build`, ne doivent pas être versionnés
+build/
+install/
+log/
+
+# Dépôts clonés (dépendances tierces, pas notre code)
+src/apriltag_ros/
+src/easy_handeye2/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Éditeurs / OS
+.vscode/
+*.swp
+.DS_Store
