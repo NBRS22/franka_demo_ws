@@ -88,6 +88,8 @@ class PickTaskNode(Node):
         if result is None or not result.success:
             raise RuntimeError(result.message if result else 'graspgen failed')
         self.get_logger().info(f'{len(result.grasps.poses)} grasps received')
+        if not result.grasps.poses:
+            raise RuntimeError('GraspGen found 0 grasps for the segmented object')
         return result
 
     def _transform_poses(self, pose_array) -> list:
@@ -116,7 +118,7 @@ class PickTaskNode(Node):
             stamped = PoseStamped()
             stamped.header = pose_array.header
             stamped.pose = pose
-            transformed = tf2_geometry_msgs.do_transform_pose(stamped, tf)
+            transformed = tf2_geometry_msgs.do_transform_pose_stamped(stamped, tf)
             transformed.header.frame_id = ROBOT_BASE_FRAME
             robot_poses.append(transformed)
 

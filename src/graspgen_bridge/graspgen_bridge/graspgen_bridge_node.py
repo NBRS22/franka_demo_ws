@@ -24,6 +24,16 @@ class GraspGenBridgeNode(Node):
         self.declare_parameter('topk_num_grasps', 10)
         self.declare_parameter('collision_threshold', 0.01)
         self.declare_parameter('max_scene_points', 8192)
+        # GraspGen's raw grasp matrices are expressed at the gripper's base
+        # link (panda_hand/fp3_hand), not the TCP (fingertip) frame -- cf.
+        # GraspGen's docs/GRIPPER_DESCRIPTION.md ("depth" = extent from base
+        # link to TCP along local +Z, approach axis). Franka's own
+        # fp3_hand -> fp3_hand_tcp offset (franka_description,
+        # end_effectors/franka_hand/franka_hand_arguments.xacro, tcp_xyz
+        # default "0 0 0.1034") is used here rather than GraspGen's own
+        # depth (0.10527314 for franka_panda.yaml, a mesh-based approximation)
+        # since it's the exact value this robot's URDF actually uses.
+        self.declare_parameter('hand_to_tcp_offset_z', 0.1034)
 
         self._host = self.get_parameter('graspgen_bridge_host').value
         self._port = self.get_parameter('graspgen_bridge_port').value
@@ -31,6 +41,7 @@ class GraspGenBridgeNode(Node):
         self.topk_num_grasps = self.get_parameter('topk_num_grasps').value
         self.collision_threshold = self.get_parameter('collision_threshold').value
         self.max_scene_points = self.get_parameter('max_scene_points').value
+        self.hand_to_tcp_offset_z = self.get_parameter('hand_to_tcp_offset_z').value
 
         self._RECV_TIMEOUT_MS = 60_000
         self._HEALTH_TIMEOUT_MS = 3_000
@@ -114,11 +125,18 @@ class GraspGenBridgeNode(Node):
         pose_array = PoseArray()
         pose_array.header.frame_id = frame_id
         pose_array.header.stamp = self.get_clock().now().to_msg()
+        tcp_offset = np.array([0.0, 0.0, self.hand_to_tcp_offset_z])
         for grasp_matrix in grasps:
+            # grasp_matrix is GraspGen's raw hand/base-link pose; translate
+            # along its own local +Z (approach axis) by the hand->TCP offset
+            # so the resulting pose matches fp3_hand_tcp, the frame
+            # pick_place_node actually drives IK against.
+            R = grasp_matrix[:3, :3]
+            tcp_position = grasp_matrix[:3, 3] + R @ tcp_offset
             pose = Pose()
-            pose.position.x = float(grasp_matrix[0, 3])
-            pose.position.y = float(grasp_matrix[1, 3])
-            pose.position.z = float(grasp_matrix[2, 3])
+            pose.position.x = float(tcp_position[0])
+            pose.position.y = float(tcp_position[1])
+            pose.position.z = float(tcp_position[2])
             q = Rotation.from_matrix(grasp_matrix[:3, :3]).as_quat()
             pose.orientation.x = float(q[0])
             pose.orientation.y = float(q[1])

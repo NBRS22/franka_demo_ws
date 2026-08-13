@@ -240,10 +240,17 @@ private:
       Eigen::Quaterniond q(p.orientation.w, p.orientation.x, p.orientation.y, p.orientation.z);
       Eigen::Vector3d approach_axis = q * Eigen::Vector3d::UnitZ();
       const double tilt = std::acos(std::clamp(-approach_axis.z(), -1.0, 1.0));
+      // Temporary INFO-level logging (normally DEBUG) to diagnose whether
+      // GraspGen's raw orientation convention matches fp3_hand_tcp's
+      // expected approach axis (+Z) -- see CLAUDE.md, "Approach-axis
+      // convention assumption", never verified against real GraspGen output.
+      RCLCPP_INFO(
+        node_->get_logger(), "Pose %zu: pos=(%.3f, %.3f, %.3f) reach=%.2fm tilt=%.1fdeg", i,
+        p.position.x, p.position.y, p.position.z, reach, tilt * 180.0 / M_PI);
       if (tilt > max_tilt_rad) {
-        RCLCPP_DEBUG(
-          node_->get_logger(), "Pose %zu filtered: approach too tilted (%.1f deg)", i,
-          tilt * 180.0 / M_PI);
+        RCLCPP_WARN(
+          node_->get_logger(), "Pose %zu filtered: approach too tilted (%.1f deg > %.1f deg)", i,
+          tilt * 180.0 / M_PI, max_approach_tilt_deg_);
         continue;
       }
 
@@ -437,12 +444,18 @@ private:
     auto result = std::make_shared<MtcPick::Result>();
     result->used_pose_index = -1;
 
-    // 1. Geometric prefilter (disabled: all poses passed through as-is).
-    std::vector<FilteredPose> filtered;
-    for (size_t i = 0; i < goal->grasp_poses.size(); ++i) {
-      filtered.push_back({static_cast<int>(i), goal->grasp_poses[i]});
+    // 1. Geometric prefilter: drop poses below the table, out of reach, or
+    // whose approach axis is too tilted (cf. filterPoses()).
+    std::vector<FilteredPose> filtered = filterPoses(goal->grasp_poses);
+    publish_status(goal_handle, "filtering");
+    if (filtered.empty()) {
+      result->success = false;
+      result->message = "0/" + std::to_string(goal->grasp_poses.size()) +
+        " candidate(s) passed the geometric filter (table height / reach / approach tilt)";
+      RCLCPP_WARN(node_->get_logger(), "%s", result->message.c_str());
+      goal_handle->abort(result);
+      return;
     }
-    RCLCPP_INFO(node_->get_logger(), "Filter disabled: passing all %zu pose(s) through", filtered.size());
 
     // 2. Open gripper once before the approach loop.
     publish_status(goal_handle, "opening");

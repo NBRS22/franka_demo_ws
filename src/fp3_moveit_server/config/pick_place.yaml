@@ -17,9 +17,13 @@
     lift.min_distance: 0.05
     lift.max_distance: 0.15
 
+    # epsilon_inner/outer maxed out (Franka Hand's full ~0.08m stroke) so the
+    # driver's own success window [width-epsilon_inner, width+epsilon_outer]
+    # covers any achieved width -- grasp.width=0.0 no longer needs to match
+    # the actual object width for franka_gripper to report success.
     grasp.width: 0.0
-    grasp.epsilon_inner: 0.005
-    grasp.epsilon_outer: 0.005
+    grasp.epsilon_inner: 0.08
+    grasp.epsilon_outer: 0.08
     grasp.speed: 0.05
     grasp.force: 20.0
 

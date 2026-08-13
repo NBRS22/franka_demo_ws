@@ -38,7 +38,8 @@ public:
     wall_frame_id_ = declare_parameter<std::string>("wall.frame_id", "fp3_link0");
     wall_position_ = declare_parameter<std::vector<double>>("wall.position", {-0.225, -0.50, 0.50});
     wall_dimensions_ = declare_parameter<std::vector<double>>("wall.dimensions", {0.05, 1.40, 1.00});
-    wall_allowed_touch_links_ = declare_parameter<std::vector<std::string>>("wall.allowed_touch_links", {});
+    wall_allowed_touch_links_ = declare_parameter<std::vector<std::string>>(
+      "wall.allowed_touch_links", std::vector<std::string>{});
 
     // The planning scene services
     get_scene_client_ = create_client<GetPlanningScene>("get_planning_scene");
