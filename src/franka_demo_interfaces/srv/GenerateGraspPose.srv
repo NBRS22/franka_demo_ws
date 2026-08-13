@@ -1,4 +1,5 @@
 sensor_msgs/PointCloud2 object_cloud
+sensor_msgs/PointCloud2 scene_cloud
 ---
 geometry_msgs/PoseArray grasps
 float32[] scores

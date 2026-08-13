@@ -55,8 +55,8 @@ def generate_launch_description():
 
         Node(
             package='robot_task_manager',
-            executable='filter_pointcloud_node',
-            name='filter_pointcloud_node',
+            executable='create_pointcloud_node',
+            name='create_pointcloud_node',
             output='screen',
         ),
 

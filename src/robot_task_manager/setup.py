@@ -25,7 +25,7 @@ setup(
         'console_scripts': [
             'pick_task_node = robot_task_manager.pick_task_node:main',
             'camera_buffer_node = robot_task_manager.camera_buffer_node:main',
-            'filter_pointcloud_node = robot_task_manager.filter_pointcloud_node:main',
+            'create_pointcloud_node = robot_task_manager.create_pointcloud_node:main',
         ],
     },
 )

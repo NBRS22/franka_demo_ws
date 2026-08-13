@@ -2,8 +2,8 @@ import threading
 import rclpy
 
 from franka_demo_interfaces.srv import (
+    CreatePointcloud,
     ExecutePickTask,
-    FilterPointcloud,
     GenerateGraspPose,
     GetFrames,
     SegmentObject,
@@ -20,7 +20,7 @@ class PickTaskNode(Node):
         # ROS Service Clients
         self.frame_client = self.create_client(GetFrames, 'get_frames', callback_group=ReentrantCallbackGroup())
         self.sam3_client = self.create_client(SegmentObject, 'segment_object', callback_group=ReentrantCallbackGroup())
-        self.filter_pointcloud_client = self.create_client(FilterPointcloud, 'filter_pointcloud', callback_group=ReentrantCallbackGroup())
+        self.create_pointcloud_client = self.create_client(CreatePointcloud, 'create_pointcloud', callback_group=ReentrantCallbackGroup())
         self.graspgen_client = self.create_client(GenerateGraspPose, 'generate_grasp_pose', callback_group=ReentrantCallbackGroup())
 
         # ROS Service Servers
@@ -51,19 +51,22 @@ class PickTaskNode(Node):
         self.get_logger().info(f'Mask received score = {result.score:.3f}')
         return result
 
-    def _filter_pointcloud(self, frame, mask_result):
-        req = FilterPointcloud.Request()
+    def _create_pointcloud(self, frame, mask_result):
+        req = CreatePointcloud.Request()
         req.mask = mask_result.mask
-        req.cloud = frame.cloud
-        result = self._call_service(self.filter_pointcloud_client, req, timeout=10.0)
+        req.rgb = frame.rgb
+        req.depth = frame.depth
+        req.camera_info = frame.camera_info
+        result = self._call_service(self.create_pointcloud_client, req, timeout=10.0)
         if result is None or not result.success:
             raise RuntimeError(result.message if result else 'pointcloud failed')
         self.get_logger().info(f'Pointcloud ready — {len(result.cloud.data)} bytes')
         return result
 
-    def _generate_grasps(self, cloud):
+    def _generate_grasps(self, cloud, scene_cloud):
         req = GenerateGraspPose.Request()
         req.object_cloud = cloud
+        req.scene_cloud = scene_cloud
         self.get_logger().info('Calling GraspGen...')
         result = self._call_service(self.graspgen_client, req, timeout=60.0)
         if result is None or not result.success:
@@ -76,8 +79,8 @@ class PickTaskNode(Node):
         try:
             frame = self._get_frames()
             mask = self._segment(frame, request.object_label, request.point_x, request.point_y)
-            pc = self._filter_pointcloud(frame, mask)
-            grasps = self._generate_grasps(pc.cloud)
+            pc = self._create_pointcloud(frame, mask)
+            grasps = self._generate_grasps(pc.cloud, pc.scene_cloud)
             # Execution (motion_node / MoveIt2) not wired in yet — flow stops after grasp generation.
             response.success = True
             response.message = (f'pick OK — seg = {mask.score:.3f} grasps = {len(grasps.grasps.poses)}')

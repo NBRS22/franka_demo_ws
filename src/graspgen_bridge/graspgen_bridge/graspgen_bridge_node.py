@@ -22,11 +22,15 @@ class GraspGenBridgeNode(Node):
         self.declare_parameter('graspgen_bridge_port', 5558)
         self.declare_parameter('num_grasps', 200)
         self.declare_parameter('topk_num_grasps', 10)
+        self.declare_parameter('collision_threshold', 0.01)
+        self.declare_parameter('max_scene_points', 8192)
 
         self._host = self.get_parameter('graspgen_bridge_host').value
         self._port = self.get_parameter('graspgen_bridge_port').value
         self.num_grasps = self.get_parameter('num_grasps').value
         self.topk_num_grasps = self.get_parameter('topk_num_grasps').value
+        self.collision_threshold = self.get_parameter('collision_threshold').value
+        self.max_scene_points = self.get_parameter('max_scene_points').value
 
         self._RECV_TIMEOUT_MS = 60_000
         self._HEALTH_TIMEOUT_MS = 3_000
@@ -76,13 +80,20 @@ class GraspGenBridgeNode(Node):
         points = pc2.read_points(cloud_msg, field_names=('x', 'y', 'z'), skip_nans=True)
         return np.stack([points['x'], points['y'], points['z']], axis=-1).astype(np.float32)
 
-    def _call_graspgen(self, xyz):
+    def _call_graspgen(self, xyz, scene_xyz=None):
         request_msg = {
             'action': 'infer',
             'point_cloud': xyz,
             'num_grasps': self.num_grasps,
             'topk_num_grasps': self.topk_num_grasps,
         }
+        # scene_point_cloud is opt-in on the server: only sent when we actually
+        # have collision context, so a request without it behaves exactly as
+        # before (no collision filtering) — cf. GraspGen zmq_server.py.
+        if scene_xyz is not None and scene_xyz.shape[0] > 0:
+            request_msg['scene_point_cloud'] = scene_xyz
+            request_msg['collision_threshold'] = self.collision_threshold
+            request_msg['max_scene_points'] = self.max_scene_points
 
         self.zmq_socket.setsockopt(zmq.RCVTIMEO, self._RECV_TIMEOUT_MS)
         try:
@@ -149,7 +160,20 @@ class GraspGenBridgeNode(Node):
                 response.message = 'empty point cloud'
                 return response
 
-            result = self._call_graspgen(xyz)
+            scene_xyz = None
+            if request.scene_cloud.data:
+                scene_xyz = self._pointcloud2_to_numpy(request.scene_cloud)
+                self.get_logger().info(
+                    f'Scene point cloud (collision context) : {scene_xyz.shape[0]} points'
+                )
+
+            result = self._call_graspgen(xyz, scene_xyz)
+
+            if 'error' in result:
+                response.success = False
+                response.message = f"GraspGen server error : {result['error']}"
+                return response
+
             grasps = result.get('grasps')
             scores = result.get('confidences')
 
@@ -166,6 +190,14 @@ class GraspGenBridgeNode(Node):
                 return response
 
             self.get_logger().info(f'{len(scores)} grasps received')
+
+            n_before_collision = result.get('num_grasps_before_collision_filter')
+            if n_before_collision is not None:
+                collision_ms = result.get('timing', {}).get('collision_filter_ms', 0.0)
+                self.get_logger().info(
+                    f'Collision filter : {len(scores)}/{n_before_collision} grasps '
+                    f'collision-free ({collision_ms:.1f}ms)'
+                )
 
             response.grasps = self._matrix_to_pose_array(
                 grasps, request.object_cloud.header.frame_id

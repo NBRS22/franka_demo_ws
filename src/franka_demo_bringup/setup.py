@@ -11,6 +11,7 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', ['launch/franka_demo.launch.py']),
+        ('share/' + package_name + '/scripts', ['scripts/wait_for_zmq_health.py']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
