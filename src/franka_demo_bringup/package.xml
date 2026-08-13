@@ -9,6 +9,8 @@
 
   <exec_depend>robot_task_manager</exec_depend>
   <exec_depend>realsense2_camera</exec_depend>
+  <exec_depend>fp3_moveit_server</exec_depend>
+  <exec_depend>handeye_tf_publisher</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

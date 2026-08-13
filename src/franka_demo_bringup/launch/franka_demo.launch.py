@@ -2,6 +2,7 @@ import os
 
 from launch import LaunchDescription
 from launch.actions import (
+    DeclareLaunchArgument,
     EmitEvent,
     ExecuteProcess,
     GroupAction,
@@ -11,6 +12,8 @@ from launch.actions import (
 from launch.event_handlers import OnProcessExit
 from launch.events import Shutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 
 # External perception servers (separate conda envs, not part of this colcon workspace).
@@ -74,6 +77,25 @@ def generate_launch_description():
     wait_sam3 = _wait_for('SAM3', SAM3_HOST, SAM3_PORT)
     wait_graspgen = _wait_for('GraspGen', GRASPGEN_HOST, GRASPGEN_PORT)
 
+    # Robot bringup: move_group, motion_server_node, pick_place_node,
+    # command_router_node, scene_setup_node. Started immediately — no dependency
+    # on the perception servers (SAM3/GraspGen). Exposes /mtc_pick publicly
+    # (via command_router_node) which pick_task_node calls once grasps are ready.
+    robot_bringup = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(
+                get_package_share_directory('fp3_moveit_server'),
+                'launch',
+                'bringup.launch.py',
+            )
+        ),
+        launch_arguments={
+            'robot_ip': LaunchConfiguration('robot_ip'),
+            'use_fake_hardware': LaunchConfiguration('use_fake_hardware'),
+            'use_rviz': LaunchConfiguration('use_rviz'),
+        }.items(),
+    )
+
     realsense = GroupAction(
         scoped=True,
         forwarding=False,
@@ -97,6 +119,24 @@ def generate_launch_description():
         ],
     )
 
+    # Reads calibration from ~/.ros2/easy_handeye2/calibrations/<calibration_name>.calib
+    # and publishes the static TF fp3_link0 → camera_link once the RealSense
+    # TF tree (camera_link → camera_color_optical_frame) is available.
+    # Started with RealSense: it has retry logic (publish_rate_s) and waits
+    # internally until both the calibration and the RealSense TF are ready.
+    handeye_tf_publisher = Node(
+        package='handeye_tf_publisher',
+        executable='handeye_tf_publisher',
+        name='handeye_tf_publisher',
+        output='screen',
+        parameters=[{
+            'calibration_name': 'fp3_link0_d455_camera_color_optical_frame_001',
+            'calib_dir': '~/.ros2/easy_handeye2/calibrations',
+            'publish_rate_s': 2.0,
+            'camera_link_frame': 'camera_link',
+        }],
+    )
+
     robot_task_manager = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(
@@ -115,6 +155,25 @@ def generate_launch_description():
         return _handler
 
     return LaunchDescription([
+
+        DeclareLaunchArgument(
+            'robot_ip',
+            default_value='192.168.1.1',
+            description='FP3 controller IP (ignored if use_fake_hardware:=true)',
+        ),
+        DeclareLaunchArgument(
+            'use_fake_hardware',
+            default_value='false',
+            description='Use simulated hardware. Default false (real robot).',
+        ),
+        DeclareLaunchArgument(
+            'use_rviz',
+            default_value='false',
+            description='Launch RViz with the MoveIt config.',
+        ),
+
+        # Robot control stack: starts immediately, independent of perception servers.
+        robot_bringup,
 
         sam3_server,
         graspgen_server,
@@ -142,7 +201,10 @@ def generate_launch_description():
         )),
         RegisterEventHandler(OnProcessExit(
             target_action=wait_graspgen,
-            on_exit=_on_wait_exit([realsense, robot_task_manager], 'GraspGen server failed health check'),
+            on_exit=_on_wait_exit(
+                [realsense, handeye_tf_publisher, robot_task_manager],
+                'GraspGen server failed health check',
+            ),
         )),
 
     ])

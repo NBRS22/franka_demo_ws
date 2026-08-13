@@ -1,0 +1,18 @@
+/**:
+  ros__parameters:
+    # Table: 60cm (X, depth) x 140cm (Y, width) x 10cm (Z, thickness).
+    # Robot (fp3_link0) is mounted ON the table, 20cm from the back edge (wall
+    # side) and 20cm from the left edge. Table top sits at z=0 (= fp3_link0
+    # origin level); position.z is the box CENTER, so z = -dimensions.z/2.
+    table.frame_id: "fp3_link0"
+    table.position: [0.10, -0.50, -0.05]
+    table.dimensions: [0.60, 1.40, 0.10]
+    table.allowed_touch_links: ["fp3_link0"]
+
+    # Wall: sits on the table surface behind the arm (x = -0.20m = back edge
+    # of the table). 5cm thick, same width as the table (140cm), 100cm tall.
+    # Center: x = back_edge - thickness/2, y = table center, z = height/2.
+    wall.frame_id: "fp3_link0"
+    wall.position: [-0.225, -0.50, 0.50]
+    wall.dimensions: [0.05, 1.40, 1.00]
+    wall.allowed_touch_links: []

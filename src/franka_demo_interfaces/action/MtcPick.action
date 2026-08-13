@@ -1,0 +1,7 @@
+geometry_msgs/PoseStamped[] grasp_poses
+---
+bool success
+string message
+int32 used_pose_index
+---
+string status

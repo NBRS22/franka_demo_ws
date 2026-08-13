@@ -1,0 +1,35 @@
+/**:
+  ros__parameters:
+    planning_group: "fp3_arm"
+    eef_name: "fp3_hand"
+    tcp_frame: "fp3_hand_tcp"
+    hand_touch_links: ["fp3_hand", "fp3_leftfinger", "fp3_rightfinger"]
+    gripper_action_name: "/franka_gripper/grasp"
+    gripper_move_action_name: "/franka_gripper/move"
+
+    filter.min_height_above_table: 0.02
+    filter.max_approach_tilt_deg: 45.0
+    filter.max_reach: 0.85
+
+    approach.min_distance: 0.02
+    approach.max_distance: 0.10
+
+    lift.min_distance: 0.05
+    lift.max_distance: 0.15
+
+    grasp.width: 0.0
+    grasp.epsilon_inner: 0.005
+    grasp.epsilon_outer: 0.005
+    grasp.speed: 0.05
+    grasp.force: 20.0
+
+    open.width: 0.08
+    open.speed: 0.1
+
+    # Hardcoded object properties (not in the action goal).
+    # TO ADJUST: set object.id and object.dimensions to match your actual object.
+    object.id: "picked_object"
+    object.dimensions: [0.03, 0.03, 0.03]
+
+    velocity_scaling_factor: 0.1
+    acceleration_scaling_factor: 0.1

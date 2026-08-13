@@ -14,6 +14,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/CreatePointcloud.srv"
   "srv/GenerateGraspPose.srv"
   "srv/VisualizeGrasps.srv"
+  "action/MtcPick.action"
+  "action/MoveToPose.action"
   DEPENDENCIES sensor_msgs geometry_msgs
 )
 
