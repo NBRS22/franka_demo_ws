@@ -6,16 +6,16 @@
     # origin level); position.z is the box CENTER, so z = -dimensions.z/2.
     # (Reverted to this original corner placement -- exact corner TBD later.)
     table.frame_id: "fp3_link0"
-    table.position: [0.10, -0.50, -0.05]
-    table.dimensions: [0.60, 1.40, 0.10]
+    table.position: [-0.15, 0.45, -0.45]
+    table.dimensions: [0.75, 1.40, 0.90]
     table.allowed_touch_links: ["fp3_link0"]
 
     # Wall: temporarily pushed far out of the way (2m along -X, well beyond
     # the arm's ~0.85m max reach) instead of hugging the table edge -- just
     # to get it out of the picture for now. Revisit exact placement later.
     wall.frame_id: "fp3_link0"
-    wall.position: [-2.0, -0.50, 0.50]
-    wall.dimensions: [0.05, 1.40, 1.00]
+    wall.position: [-0.475, 0.45, 0.75]
+    wall.dimensions: [0.1, 1.40, 1.50]
     # wall.allowed_touch_links intentionally omitted (empty by default in code):
     # an explicit `[]` here crashes any node loading this file at construction
     # time (rclcpp can't infer an element type for an empty YAML sequence).

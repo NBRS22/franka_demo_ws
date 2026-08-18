@@ -34,6 +34,25 @@ class GraspGenBridgeNode(Node):
         # depth (0.10527314 for franka_panda.yaml, a mesh-based approximation)
         # since it's the exact value this robot's URDF actually uses.
         self.declare_parameter('hand_to_tcp_offset_z', 0.1034)
+        # GraspMoE planner (server-side, cf. GraspGen zmq_server.py/graspmoe.py):
+        # unions the diffusion sampler with deterministic OBB-swept candidates
+        # (top face + all 4 sides by default) so top-down grasps are reliably
+        # included even when diffusion alone favors lateral grasps for a given
+        # object shape -- the root cause identified for GraspGen never proposing
+        # a top-down grasp on small objects, and for those grasps then failing
+        # the scene-collision filter (little clearance to the table for a
+        # lateral approach on a short object). 'diffusion' reverts to the
+        # original single-branch behavior. NOT YET VALIDATED on real hardware --
+        # only the server-side dispatch logic was verified with a mocked model.
+        self.declare_parameter('planner', 'graspmoe')
+        self.declare_parameter('moe_num_yaws', 36)
+        self.declare_parameter('moe_z_offsets_cm', [-8.0, -6.0, -4.0, -2.0, 0.0])
+        self.declare_parameter('moe_outlier_threshold', 0.014)
+        self.declare_parameter('moe_outlier_k', 20)
+        self.declare_parameter('moe_obb_mode', 'advanced')
+        self.declare_parameter('moe_skip_obb_rule', 'auto')
+        self.declare_parameter('moe_obb_density', 'dense-topandside')
+        self.declare_parameter('moe_obb_position_spacing_cm', 1.0)
 
         self._host = self.get_parameter('graspgen_bridge_host').value
         self._port = self.get_parameter('graspgen_bridge_port').value
@@ -42,6 +61,15 @@ class GraspGenBridgeNode(Node):
         self.collision_threshold = self.get_parameter('collision_threshold').value
         self.max_scene_points = self.get_parameter('max_scene_points').value
         self.hand_to_tcp_offset_z = self.get_parameter('hand_to_tcp_offset_z').value
+        self.planner = self.get_parameter('planner').value
+        self.moe_num_yaws = self.get_parameter('moe_num_yaws').value
+        self.moe_z_offsets_cm = self.get_parameter('moe_z_offsets_cm').value
+        self.moe_outlier_threshold = self.get_parameter('moe_outlier_threshold').value
+        self.moe_outlier_k = self.get_parameter('moe_outlier_k').value
+        self.moe_obb_mode = self.get_parameter('moe_obb_mode').value
+        self.moe_skip_obb_rule = self.get_parameter('moe_skip_obb_rule').value
+        self.moe_obb_density = self.get_parameter('moe_obb_density').value
+        self.moe_obb_position_spacing_cm = self.get_parameter('moe_obb_position_spacing_cm').value
 
         self._RECV_TIMEOUT_MS = 60_000
         self._HEALTH_TIMEOUT_MS = 3_000
@@ -97,7 +125,17 @@ class GraspGenBridgeNode(Node):
             'point_cloud': xyz,
             'num_grasps': self.num_grasps,
             'topk_num_grasps': self.topk_num_grasps,
+            'planner': self.planner,
         }
+        if self.planner == 'graspmoe':
+            request_msg['moe_num_yaws'] = self.moe_num_yaws
+            request_msg['moe_z_offsets_cm'] = self.moe_z_offsets_cm
+            request_msg['moe_outlier_threshold'] = self.moe_outlier_threshold
+            request_msg['moe_outlier_k'] = self.moe_outlier_k
+            request_msg['moe_obb_mode'] = self.moe_obb_mode
+            request_msg['moe_skip_obb_rule'] = self.moe_skip_obb_rule
+            request_msg['moe_obb_density'] = self.moe_obb_density
+            request_msg['moe_obb_position_spacing_cm'] = self.moe_obb_position_spacing_cm
         # scene_point_cloud is opt-in on the server: only sent when we actually
         # have collision context, so a request without it behaves exactly as
         # before (no collision filtering) — cf. GraspGen zmq_server.py.
@@ -208,6 +246,16 @@ class GraspGenBridgeNode(Node):
                 return response
 
             self.get_logger().info(f'{len(scores)} grasps received')
+
+            branch_tags = result.get('branch_tags')
+            if branch_tags is not None:
+                n_diff = branch_tags.count('diff')
+                n_obb = len(branch_tags) - n_diff
+                skipped_note = ' (OBB branch skipped)' if result.get('skipped_obb') else ''
+                self.get_logger().info(
+                    f'Planner={result.get("planner", self.planner)}: '
+                    f'{n_diff} diffusion + {n_obb} OBB grasp(s){skipped_note}'
+                )
 
             n_before_collision = result.get('num_grasps_before_collision_filter')
             if n_before_collision is not None:
