@@ -19,11 +19,7 @@
 using ApplyPlanningScene = moveit_msgs::srv::ApplyPlanningScene;
 using GetPlanningScene = moveit_msgs::srv::GetPlanningScene;
 
-// One-shot node: applies the static scene (table + wall) via
-// /apply_planning_scene, then exits. Deliberately independent of
-// MoveGroupInterface (only needs the raw service), so it stays a light,
-// standalone step in bringup.launch.py rather than something bundled into
-// motion_server_node or pick_place_node.
+
 class SceneSetup : public rclcpp::Node
 {
 public:
@@ -31,19 +27,20 @@ public:
   {
     // Parameters for the table and wall collision objects
     table_frame_id_ = declare_parameter<std::string>("table.frame_id", "fp3_link0");
-    table_position_ = declare_parameter<std::vector<double>>("table.position", {0.10, -0.50, -0.05});
-    table_dimensions_ = declare_parameter<std::vector<double>>("table.dimensions", {0.60, 1.40, 0.10});
+    table_position_ = declare_parameter<std::vector<double>>("table.position", {-0.15, 0.45, -0.45});
+    table_dimensions_ = declare_parameter<std::vector<double>>("table.dimensions", {0.75, 1.40, 0.90});
     table_allowed_touch_links_ = declare_parameter<std::vector<std::string>>("table.allowed_touch_links", {table_frame_id_});
 
     wall_frame_id_ = declare_parameter<std::string>("wall.frame_id", "fp3_link0");
-    wall_position_ = declare_parameter<std::vector<double>>("wall.position", {0, 0, 0});
-    wall_dimensions_ = declare_parameter<std::vector<double>>("wall.dimensions", {1, 1.40, 1.00});
-    wall_allowed_touch_links_ = declare_parameter<std::vector<std::string>>(
-      "wall.allowed_touch_links", std::vector<std::string>{});
+    wall_position_ = declare_parameter<std::vector<double>>("wall.position", {-0.475, 0.45, 0.75});
+    wall_dimensions_ = declare_parameter<std::vector<double>>("wall.dimensions", {0.1, 1.40, 1.50});
+    wall_allowed_touch_links_ = declare_parameter<std::vector<std::string>>("wall.allowed_touch_links", std::vector<std::string>{});
 
     // The planning scene services
     get_scene_client_ = create_client<GetPlanningScene>("get_planning_scene");
     apply_scene_client_ = create_client<ApplyPlanningScene>("apply_planning_scene");
+
+    RCLCPP_INFO(get_logger(), "Scene setup node initialized");
   }
 
   // Run the one-shot scene setup
@@ -108,7 +105,6 @@ private:
   rclcpp::Client<GetPlanningScene>::SharedPtr get_scene_client_;
   rclcpp::Client<ApplyPlanningScene>::SharedPtr apply_scene_client_;
 
-  // Generic box collision object builder.
   moveit_msgs::msg::CollisionObject buildObject(
     const std::string & id,
     const std::string & frame_id,

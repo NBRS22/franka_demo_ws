@@ -1,9 +1,95 @@
 # fp3_moveit_server
 
 Sole owner of the FP3 arm's `move_group` bringup. Every other package in this
-workspace controls the arm exclusively through this package's two public
-actions -- nothing else is allowed to hold a `MoveGroupInterface` or an MTC
-`Task`, and nothing else launches `move_group`.
+workspace controls the arm exclusively through this package's public action
+(`mtc_pick`) -- nothing else is allowed to hold a `MoveGroupInterface` or an
+MTC `Task`, and nothing else launches `move_group`.
+
+## Référence supprimée : `motion_server_node` (MoveGroupInterface simple)
+
+`motion_server_node` a été retiré du package (fichier `src/motion_server_node.cpp`
+supprimé, entrée retirée du router et du launch). Il exposait une action
+`move_to_pose` (`MoveToPose.action`) qui déplaçait le bras vers une pose cible
+unique via `MoveGroupInterface` — l'approche la plus directe pour un mouvement
+point-à-point sans séquençage MTC.
+
+### Pattern MoveGroupInterface (pour référence future)
+
+Si tu veux réécrire un node de mouvement simple basé sur `MoveGroupInterface`
+plutôt que MTC, voici les points non-évidents appris en test réel :
+
+**Récupération du robot_description depuis move_group**
+```cpp
+// Ne pas reprocesser le xacro localement — récupérer depuis /move_group
+// pour être sûr d'utiliser exactement le même modèle.
+auto param_client = std::make_shared<rclcpp::AsyncParametersClient>(node, "move_group");
+param_client->wait_for_service(std::chrono::seconds(10));
+auto results = param_client->get_parameters(
+    {"robot_description", "robot_description_semantic"}).get();
+for (const auto & param : results)
+    node->declare_parameter<std::string>(param.get_name(), param.as_string());
+// Ensuite seulement : construire MoveGroupInterface
+auto move_group = std::make_shared<moveit::planning_interface::MoveGroupInterface>(
+    node, "fp3_arm");
+```
+
+**Gate /joint_states avant d'exposer l'action server**
+```cpp
+// MoveGroupInterface::computeCartesianPath() / plan() appellent
+// current_state_monitor qui doit avoir reçu au moins un /joint_states.
+// Sans cette gate, un client rapide obtient un IK contre un état vide
+// ("Found empty JointState message") et échoue silencieusement.
+std::atomic<bool> received{false};
+auto sub = node->create_subscription<sensor_msgs::msg::JointState>(
+    "joint_states", 10,
+    [&received](const sensor_msgs::msg::JointState::SharedPtr msg) {
+        if (!msg->name.empty()) received = true;
+    });
+// spin dans un thread séparé + attendre received pendant max 15s
+// SEULEMENT ENSUITE : construire l'action server
+```
+
+**Vérification IK/collision avant le mouvement (precheck sans motion)**
+```cpp
+auto ik_req = std::make_shared<GetPositionIK::Request>();
+ik_req->ik_request.group_name     = "fp3_arm";
+ik_req->ik_request.pose_stamped   = target_pose;
+ik_req->ik_request.avoid_collisions = true;
+ik_req->ik_request.timeout        = rclcpp::Duration::from_seconds(1.0);
+auto ik_resp = ik_client_->async_send_request(ik_req).get();
+if (ik_resp->error_code.val != moveit_msgs::msg::MoveItErrorCodes::SUCCESS) {
+    // Pose inatteignable ou en collision — rejeter avant de bouger
+}
+```
+
+**Séquence plan/execute**
+```cpp
+move_group->setPoseTarget(target_pose);
+moveit::planning_interface::MoveGroupInterface::Plan plan;
+bool ok = (move_group->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS);
+if (ok) move_group->execute(plan);
+// ATTENTION : execute() bloque indéfiniment si le controller ne répond pas.
+// Pas de timeout natif — à envelopper dans un thread avec deadline si besoin.
+```
+
+**Vitesse limitée par défaut**
+```cpp
+// Toujours setter explicitement avant le premier plan() —
+// le défaut MoveIt est 100% de la vitesse max.
+move_group->setMaxVelocityScalingFactor(0.1);
+move_group->setMaxAccelerationScalingFactor(0.1);
+```
+
+**`MoveGroupInterface` nécessite que le node tourne déjà (executor actif)**
+```cpp
+// Créer un executor + thread AVANT de construire MoveGroupInterface :
+rclcpp::executors::SingleThreadedExecutor executor;
+executor.add_node(node);
+std::thread spin_thread([&executor]() { executor.spin(); });
+// Ensuite seulement :
+auto move_group = std::make_shared<moveit::planning_interface::MoveGroupInterface>(
+    node, "fp3_arm");
+```
 
 ## Development history (what was built, in order)
 
@@ -148,72 +234,57 @@ adding action servers, not by adding launch files.
 ## Node graph
 
 ```
-        clients (fp3_grasp_demo, fp3_apriltag_demo, fp3_apriltag_mtc_demo, ...)
-                                          |
-                                          v
-                              command_router_node
-                         (public: move_to_pose, pick_object)
-                                 /              \
-                                v                v
-              /internal/motion_server/    /internal/pick_place/
-                  move_to_pose                 pick_object
-                        |                            |
-                        v                            v
-                motion_server_node             pick_place_node
-              (MoveGroupInterface,          (MTC Tasks for approach/
-               simple single-stage           place/retreat, + plain
-               moves)                        franka_gripper Grasp/Move
-                        \                     action calls for every
-                         \                    gripper motion)
-                          \                        /    \
-                           v                      v      v
-                        /move_group        franka_gripper_node (open/
-                     (single instance,      close, via the real Grasp/
-                    launched by this        Move actions -- never
-                    package's launch)       through MoveIt/move_group)
+        clients (pick_task_node, ...)
+                        |
+                        v
+            command_router_node
+              (public: mtc_pick)
+                        |
+                        v
+          /internal/pick_place/mtc_pick
+                        |
+                        v
+               pick_place_node
+          (MTC Tasks approach/lift +
+           franka_gripper Grasp/Move
+           pour chaque action gripper)
+                   /         \
+                  v           v
+            /move_group    franka_gripper_node
+         (instance unique,  (open/close via les
+          lancée par ce      vraies actions Grasp/Move
+          package)           — jamais via MoveIt)
 ```
 
-`scene_setup_node` runs once at startup, before any goal can arrive, and adds
-the table to the planning scene via `/apply_planning_scene`. It does not sit
-in the command path.
+`scene_setup_node` tourne une seule fois au démarrage, avant qu'aucun goal
+ne puisse arriver, et ajoute la table + le mur à la planning scene via
+`/apply_planning_scene`. Il ne fait pas partie du chemin de commande.
 
-## Public actions (what clients call)
+## Public action (ce que les clients appellent)
 
-Both live on `command_router_node`, type defs in `franka_demo_interfaces`:
+Une seule action sur `command_router_node`, définie dans `franka_demo_interfaces` :
 
-- **`move_to_pose`** (`MoveToPose`): single-stage move to a
-  `geometry_msgs/PoseStamped`. IK/collision-checked before any motion.
-  Feedback: `checking_ik` -> `planning` -> `executing` -> `done`.
-- **`pick_object`** (`PickObject`): full pick-AND-place from a list of grasp
-  candidate poses (e.g. from GraspGen, or a client's own orientation
-  fallbacks) + object id/dimensions. Feedback: `filtering` -> `opening` ->
-  `planning` -> `approaching` -> `grasping` -> `checking` -> `attaching` ->
-  `retreating` -> `placing` -> `detaching` -> `releasing`. `grasping` is
-  just the physical `Grasp` action; `checking` is a separate, later step
-  that verifies the achieved width against the expected object (see
-  "pick_place_node internals"). Tries each surviving candidate in
-  order for the approach (via a fresh MTC `Task` per candidate: `CurrentState`
-  -> `Connect` -> `MoveRelative` (approach) -> `FixedCartesianPoses`+
-  `ComputeIK` -> `ModifyPlanningScene` allow-collision), stops at the first
-  one that plans successfully, and reports its original index as
-  `used_pose_index`. After a successful grasp+attach+retreat, plans/executes
-  a second absolute-pose MTC `Task` to the fixed `place.pose_xyz`, detaches
-  the object, and opens the gripper to release it -- see "pick_place_node
-  internals" below for why this isn't one monolithic `Task`.
+- **`mtc_pick`** (`MtcPick`) : pick complet à partir d'une liste ordonnée de
+  poses de grasp (issues de GraspGen via `pick_task_node`).
+  Feedback : `filtering` -> `opening` -> `approaching` -> `grasping` ->
+  `attaching` -> `lifting`.
+  Essaie chaque candidat survivant dans l'ordre via un `MTC Task` dédié
+  (`CurrentState` -> `Connect` -> `MoveRelative` approach -> `FixedCartesianPoses`
+  \+ `ComputeIK` -> `ModifyPlanningScene`), s'arrête au premier qui planifie,
+  ferme le gripper (`franka_gripper/Grasp`), attache l'objet à la planning
+  scene, puis lève (`MoveRelative` +Z monde). Renvoie `used_pose_index`.
 
-Clients never call `motion_server_node` or `pick_place_node` directly; those
-are reachable only under `/internal/...` and are wired up that way in
-`bringup.launch.py`, not enforced by ROS itself.
+Clients never call `pick_place_node` directly — it is reachable only under
+`/internal/pick_place/mtc_pick`, wired in `bringup.launch.py` via
+`remappings`, not enforced by ROS itself.
 
-## Why a router instead of two independent action servers
+## Why a router even with a single action
 
-`command_router_node` holds a single `busy_` flag shared across both action
-types. If it didn't exist and clients called `motion_server_node` and a
-future `pick_place_node` directly, nothing would stop a `move_to_pose` and a
-`pick_object` from being executed at the same time -- two separate
-processes can't share an in-memory flag. Routing everything through one node
-makes the mutual exclusion trivial (one atomic bool) instead of requiring a
-separate lock service.
+`command_router_node` holds the `busy_` flag and the startup gate (waits for
+`pick_place_node` before exposing the public server). Keeping the router
+means clients never depend on `pick_place_node`'s name or namespace — adding
+a future action type only requires adding it to the router, not changing any
+client code.
 
 ## Why `move_group` is a copy of `franka_fp3_moveit_config/launch/moveit.launch.py`, not an include
 

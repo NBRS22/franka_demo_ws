@@ -212,24 +212,11 @@ def generate_launch_description():
         parameters=[LaunchConfiguration('scene_config')],
     )
 
-    # motion_server_node keeps its default (unnamespaced) node identity so
-    # its AsyncParametersClient("move_group")/MoveGroupInterface still
-    # resolve to the real /move_group above. Only its action is remapped to
-    # an internal name -- clients never call it directly, only
-    # command_router_node does.
-    motion_server_node = Node(
-        package='fp3_moveit_server',
-        executable='motion_server_node',
-        output='screen',
-        remappings=[('move_to_pose', '/internal/motion_server/move_to_pose')],
-    )
-
     # pick_place_node's MTC PipelinePlanner plans locally (like move_group
     # itself), so it needs the same kinematics/joint_limits/ompl parameters
-    # -- not just robot_description, which it fetches at runtime the same
-    # way motion_server_node does. table.* is reused from scene_config for
-    # its own geometric prefilter (same table geometry scene_setup_node
-    # applied, no separate copy).
+    # -- not just robot_description, which it fetches at runtime from
+    # /move_group. table.* is reused from scene_config for its own geometric
+    # prefilter (same table geometry scene_setup_node applied, no separate copy).
     pick_place_node = Node(
         package='fp3_moveit_server',
         executable='pick_place_node',
@@ -261,7 +248,7 @@ def generate_launch_description():
     # ~500ms miss was observed without it).
     delayed_server_nodes = TimerAction(
         period=5.0,
-        actions=[scene_setup_node, motion_server_node, pick_place_node, command_router_node],
+        actions=[scene_setup_node, pick_place_node, command_router_node],
     )
 
     return LaunchDescription([
