@@ -19,6 +19,7 @@
 #include "moveit_msgs/msg/allowed_collision_entry.hpp"
 #include "moveit_msgs/msg/allowed_collision_matrix.hpp"
 #include "moveit_msgs/msg/attached_collision_object.hpp"
+#include "moveit_msgs/msg/collision_object.hpp"
 #include "moveit_msgs/msg/planning_scene.hpp"
 #include "moveit_msgs/msg/planning_scene_components.hpp"
 #include "moveit_msgs/srv/apply_planning_scene.hpp"
@@ -462,6 +463,41 @@ private:
     return scene_client_->async_send_request(request).get()->success;
   }
 
+  // Detaches object_id from tcp_frame once the pick sequence is done, so the
+  // planning scene (and RViz) go back to showing the robot's real state --
+  // gripper included -- instead of a synthetic box rigidly glued to
+  // tcp_frame forever. Also removes it from the world side of the diff:
+  // MoveIt's default detach behaviour re-adds a detached object to the world
+  // at its last attached pose, which would leave a ghost box floating where
+  // the gripper last was instead of making it disappear. Without this step,
+  // a stale attached object also lingers across pick attempts and could
+  // falsely collide with a later grasp candidate.
+  bool detachObject()
+  {
+    moveit_msgs::msg::AttachedCollisionObject detached;
+    detached.link_name = mtc_params_.tcp_frame;
+    detached.object.id = mtc_params_.object_id;
+    detached.object.operation = detached.object.REMOVE;
+
+    moveit_msgs::msg::CollisionObject world_remove;
+    world_remove.id = mtc_params_.object_id;
+    world_remove.operation = world_remove.REMOVE;
+
+    moveit_msgs::msg::PlanningScene diff;
+    diff.is_diff = true;
+    diff.robot_state.is_diff = true;
+    diff.robot_state.attached_collision_objects.push_back(detached);
+    diff.world.collision_objects.push_back(world_remove);
+
+    if (!scene_client_->wait_for_service(std::chrono::seconds(10))) {
+      RCLCPP_ERROR(node_->get_logger(), "/apply_planning_scene unavailable, cannot detach object");
+      return false;
+    }
+    auto request = std::make_shared<ApplyPlanningScene::Request>();
+    request->scene = diff;
+    return scene_client_->async_send_request(request).get()->success;
+  }
+
   void execute(const std::shared_ptr<GoalHandleMtcPick> goal_handle)
   {
     BusyGuard guard{busy_};
@@ -571,6 +607,17 @@ private:
       RCLCPP_ERROR(node_->get_logger(), "%s", result->message.c_str());
       goal_handle->abort(result);
       return;
+    }
+
+    // 7. Detach the object from the planning scene -- best-effort, a failure
+    // here doesn't undo an otherwise-successful pick, just log it (a stale
+    // attached object would linger and could affect the next pick attempt).
+    publish_status(goal_handle, "detaching");
+    if (!detachObject()) {
+      RCLCPP_WARN(
+        node_->get_logger(),
+        "Failed to detach object from planning scene after pick -- it may "
+        "linger and affect the next pick attempt");
     }
 
     result->success = true;

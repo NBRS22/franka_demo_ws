@@ -267,12 +267,19 @@ Une seule action sur `command_router_node`, définie dans `franka_demo_interface
 - **`mtc_pick`** (`MtcPick`) : pick complet à partir d'une liste ordonnée de
   poses de grasp (issues de GraspGen via `pick_task_node`).
   Feedback : `filtering` -> `opening` -> `approaching` -> `grasping` ->
-  `attaching` -> `lifting`.
+  `attaching` -> `lifting` -> `detaching`.
   Essaie chaque candidat survivant dans l'ordre via un `MTC Task` dédié
   (`CurrentState` -> `Connect` -> `MoveRelative` approach -> `FixedCartesianPoses`
   \+ `ComputeIK` -> `ModifyPlanningScene`), s'arrête au premier qui planifie,
   ferme le gripper (`franka_gripper/Grasp`), attache l'objet à la planning
-  scene, puis lève (`MoveRelative` +Z monde). Renvoie `used_pose_index`.
+  scene, lève (`MoveRelative` +Z monde), puis détache l'objet de la planning
+  scene (`detachObject`, miroir d'`attachObject` — `AttachedCollisionObject`
+  + `CollisionObject` en `REMOVE` dans le même diff, pour qu'il disparaisse
+  au lieu de réapparaître flottant dans le monde à la dernière pose attachée,
+  comportement par défaut de MoveIt sur un simple détachement). Best-effort :
+  un échec du détachement ne fait pas échouer le pick (juste un `WARN`), mais
+  laisse un objet attaché fantôme qui peut fausser les collisions du prochain
+  pick. Renvoie `used_pose_index`.
   Depuis l'ajout de `prioritizeTopDown` (cf. ci-dessous), "dans l'ordre" ne
   veut plus dire "dans l'ordre reçu de GraspGen" mais "par tilt croissant,
   la pose la plus verticale d'abord" — l'ordre brut envoyé par
@@ -535,16 +542,84 @@ edited.
     réelle de la pince, et que les faux positifs de collision contre la
     table pendant l'approche (pince ouverte) disparaissent.
 
+## Table height calibrée par contact réel (`scene.yaml`)
+
+`table.position.z` valait `-0.45` (avec `table.dimensions.z = 0.90`, donc surface
+déclarée à `Z = -0.45 + 0.90/2 = 0.0` dans `fp3_link0`) -- jamais mesuré, une
+estimation. Symptôme observé : le bras touche la vraie table pendant un pick
+via la pipeline complète (SAM3/GraspGen), alors qu'un plan MoveIt manuel
+(pose choisie à la main dans RViz) ne la touche jamais -- pourtant MTC valide
+son plan comme sans collision dans les deux cas. Ça n'a rien à voir avec un
+drift des joints (`robot_mode` vérifié `IDLE`, aucune erreur) ni avec la
+calibration eye-on-base caméra->robot (celle-ci décale la pose *cible*, pas
+la table elle-même) : MoveIt évite correctement *sa* table interne, mais si
+cette table interne est mal placée par rapport à la vraie, un plan "propre"
+du point de vue de MoveIt peut quand même toucher la vraie table.
+
+**Mesure faite** : bras en gravity compensation (`franka_bringup
+example.launch.py ... gravity_compensation_example_controller`), amené à la
+main en contact réel avec la table, puis `ros2 run tf2_ros tf2_echo
+fp3_link0 fp3_hand_tcp` au moment du contact :
+```
+Translation: [-0.154, 0.627, 0.034]
+```
+`Z = 0.034` au contact réel vs `Z = 0.0` déclaré -- écart brut de **3.4cm**.
+Nuance découverte en creusant : `fp3_hand_tcp` n'est pas exactement au bout
+du doigt -- géométrie de collision du "rubber tip" (`franka_hand.xacro`)
+vérifiée à la main : origine du doigt à 58.4mm de `hand` + centre du pad à
+45.25mm dans le repère du doigt + demi-hauteur du pad 9.25mm = **112.9mm**
+de `hand`, contre **103.4mm** pour `hand_tcp` -- écart de ~9.5mm, le pad
+touche donc ~1cm plus loin que ce que lit `hand_tcp`. Avec l'orientation
+quasi verticale du contact (roll≈178.5°, pitch≈-3.1°), la vraie hauteur de
+table serait plutôt `≈0.034 - 0.0095 ≈ 0.0245`. Cela dit, l'hypothèse de
+départ du projet (table au même niveau que `fp3_link0`, `Z=0`) contredit à
+la fois la mesure de contact et un "jeu" table réelle/virtuelle déjà
+rapporté avant ce chantier -- première décision de l'utilisateur, tranchant
+entre ces valeurs : `table.position.z = -0.43` (surface déclarée à
+`Z = 0.02`).
+
+**La table n'est en fait pas plane par rapport à `fp3_link0`** -- 3 points de
+contact réel mesurés en gravity compensation :
+
+| Point | x | y | z |
+|---|---|---|---|
+| 1 | 0.137 | 0.769 | 0.041 |
+| 2 | 0.161 | 0.495 | 0.032 |
+| 3 | -0.062 | 0.597 | 0.036 |
+
+Plan ajusté sur ces 3 points : `z ≈ -0.00306·x + 0.0326·y + 0.0164` -- pente
+quasi entièrement en Y (~3.3%, ~1.9°), quasi nulle en X. Sur toute la
+largeur Y déclarée de la table (1.40m), ça représente jusqu'à ±2.3cm de
+variation de hauteur réelle entre les deux bords -- une seule valeur
+`table.position.z` ne peut donc pas être exacte partout (`scene_setup_node`
+ne modélise la table qu'à plat, pas de paramètre d'orientation). Fix propre
+identifié mais pas implémenté : ajouter `table.orientation` (quaternion,
+dérivé de la normale du plan mesuré) et l'appliquer à la primitive `BOX`
+dans `scene_setup_node.cpp`.
+
+**Décision finale de l'utilisateur (solution rapide, pas la table inclinée)** :
+uniformiser autour du point le plus haut mesuré (0.041), donc le sens sûr --
+table virtuelle jamais plus basse que la réalité -- plutôt que modéliser
+l'inclinaison. `table.position.z = -0.40` (surface déclarée à
+`Z = -0.40 + 0.90/2 = 0.05`).
+
+**Non re-testé en conditions réelles après ce correctif.**
+
 ## Known limitations / not yet verified live
 
 - **Real hardware pick-and-place confirmed working end-to-end** (previously
   only fake hardware had been exercised): full live run with
-  `use_fake_hardware:=false` completed `opening` -> `filtering` -> `planning`
-  -> `approaching` -> `grasping` -> `attaching` -> `retreating` -> `placing`
-  -> `detaching` -> `releasing`, real gripper open/close via the real
-  `franka_gripper` actions, `SUCCEEDED`. `simulate_gripper` (wired to
-  `use_fake_hardware`) still exists for fake-hardware testing, since
-  `franka_gripper_node` isn't launched there at all in that mode.
+  `use_fake_hardware:=false` completed the sequence, real gripper open/close
+  via the real `franka_gripper` actions, `SUCCEEDED`. `simulate_gripper`
+  (wired to `use_fake_hardware`) still exists for fake-hardware testing,
+  since `franka_gripper_node` isn't launched there at all in that mode.
+  **The exact step sequence quoted here (`retreating -> placing -> detaching
+  -> releasing`) is stale** — it described an earlier, richer pipeline with
+  a real place step that no longer exists in the current code. The current
+  `execute()` stops at `lifting -> detaching` (cf. "Public action" above):
+  the object is detached from the planning scene right after the lift
+  succeeds, nothing is placed/released anywhere yet (no place target, no
+  gripper re-open at the end) — that's still roadmap, not implemented.
 - **`place.pose_xyz` is a placeholder**, same convention/caveat as
   `fp3_apriltag_demo`'s old `ready_pose_xyz`: no guarantee it's
   reachable/collision-free in any given scene. Adjust per deployment.

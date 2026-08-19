@@ -2,7 +2,7 @@
   ros__parameters:
 
     table.frame_id: "fp3_link0"
-    table.position: [-0.15, 0.45, -0.45]
+    table.position: [-0.15, 0.45, -0.435]
     table.dimensions: [0.75, 1.40, 0.90]
     table.allowed_touch_links: ["fp3_link0"]
 
