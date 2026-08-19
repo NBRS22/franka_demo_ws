@@ -58,6 +58,18 @@ def generate_launch_description():
         ),
 
         # --- robot_task_manager nodes ---
+        # Continuous, unmasked, organized point cloud -- started before
+        # camera_buffer so its topic has a chance to be publishing something
+        # by the time the first get_frames call happens (best-effort, no
+        # explicit wait: get_frames just returns success=False with a clear
+        # message until the first cloud has arrived).
+        Node(
+            package='robot_task_manager',
+            executable='pointcloud_publisher_node',
+            name='pointcloud_publisher_node',
+            output='screen',
+        ),
+
         Node(
             package='robot_task_manager',
             executable='camera_buffer_node',

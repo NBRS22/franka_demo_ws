@@ -87,9 +87,11 @@ class PickTaskNode(Node):
     def _create_pointcloud(self, frame, mask_result):
         req = CreatePointcloud.Request()
         req.mask = mask_result.mask
-        req.rgb = frame.rgb
-        req.depth = frame.depth
-        req.camera_info = frame.camera_info
+        # frame.cloud comes from the same get_frames call as frame.rgb (the
+        # image SAM3 segmented), not "whatever pointcloud_publisher_node's
+        # topic latest holds right now" — keeps the mask and the cloud from
+        # the same camera instant even after SAM3's round-trip latency.
+        req.raw_cloud = frame.cloud
         result = self._call_service(self.create_pointcloud_client, req, timeout=10.0)
         if result is None or not result.success:
             raise RuntimeError(result.message if result else 'pointcloud failed')

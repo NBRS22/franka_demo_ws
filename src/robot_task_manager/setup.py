@@ -26,6 +26,7 @@ setup(
             'pick_task_node = robot_task_manager.pick_task_node:main',
             'camera_buffer_node = robot_task_manager.camera_buffer_node:main',
             'create_pointcloud_node = robot_task_manager.create_pointcloud_node:main',
+            'pointcloud_publisher_node = robot_task_manager.pointcloud_publisher_node:main',
         ],
     },
 )

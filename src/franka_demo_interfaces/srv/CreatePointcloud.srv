@@ -1,7 +1,5 @@
 sensor_msgs/Image mask
-sensor_msgs/Image rgb
-sensor_msgs/Image depth
-sensor_msgs/CameraInfo camera_info
+sensor_msgs/PointCloud2 raw_cloud
 ---
 sensor_msgs/PointCloud2 cloud
 sensor_msgs/PointCloud2 scene_cloud

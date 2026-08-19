@@ -10,11 +10,30 @@ Orchestration du pick : bufferise les frames caméra, gère la déprojection/gé
 
 ## Nodes
 
-| Node | Fichier | Service exposé | Rôle |
+| Node | Fichier | Service/Topic | Rôle |
 |---|---|---|---|
-| `camera_buffer` | `camera_buffer_node.py` | `get_frames` | dernier RGB+depth (aligné)+camera_info bufferisés |
+| `pointcloud_publisher_node` | `pointcloud_publisher_node.py` | pub `/pick/raw_pointcloud` | déprojette **en continu** tout le champ (non masqué) depuis depth+K |
+| `camera_buffer` | `camera_buffer_node.py` | `get_frames` | dernier RGB+depth (aligné)+camera_info+nuage brut bufferisés |
 | `pick_task_node` | `pick_task_node.py` | `execute_pick_task` | séquenceur du pick (appelle tous les autres services) |
-| `create_pointcloud_node` | `create_pointcloud_node.py` | `create_pointcloud` | déprojette l'objet (et la scène) depuis depth+K, masqué par SAM3 |
+| `create_pointcloud_node` | `create_pointcloud_node.py` | `create_pointcloud` | filtre le nuage brut (objet + scène) via le masque SAM3 |
+
+### `pointcloud_publisher_node` (nouveau) + refactor de `create_pointcloud_node`
+
+**Avant** : `create_pointcloud_node` déprojetait lui-même `depth`+`camera_info` reçus dans la requête, à chaque pick, uniquement pour la zone masquée.
+
+**Maintenant** : la déprojection (pinhole, vectorisée numpy — logique inchangée, juste déplacée) tourne en continu dans `pointcloud_publisher_node`, sur **toute** l'image (pas de masque), et publie un nuage coloré **organisé** (`height`/`width` = dimensions image, `row_step` sans padding) sur `/pick/raw_pointcloud`, à `publish_rate_hz` (param ROS2, défaut `10.0`). `create_pointcloud_node` ne fait plus que **filtrer** ce nuage déjà déprojeté via le masque SAM3 (érosion objet / dilatation scène, inchangé) — il ne calcule plus aucune géométrie 3D lui-même.
+
+Bénéfices : (1) le nuage complet existe indépendamment d'un pick, visualisable en continu dans RViz (rien d'autre ne publiait un nuage live jusqu'ici — `pointcloud.enable` reste volontairement désactivé côté RealSense, cf. CLAUDE.md racine) ; (2) plus de déprojection redondante à chaque pick.
+
+**Synchronisation préservée** (choix explicite, pas la solution la plus simple) : `camera_buffer_node` s'abonne aussi à `/pick/raw_pointcloud` et bufferise `_last_cloud` exactement comme `rgb`/`depth`/`camera_info` — `get_frames` renvoie les 4 depuis le **même** instant caméra. Sans ça, `create_pointcloud_node` aurait pu recevoir "le nuage le plus récent au moment de la requête" plutôt que celui correspondant à l'image envoyée à SAM3, et le masque (calculé sur un `rgb` capturé *avant* le round-trip SAM3, jusqu'à ~1s de latence) aurait pu se désynchroniser du nuage si la scène bougeait entre-temps — même risque que celui qui avait justifié le bundling rgb/depth/camera_info à l'origine.
+
+**Interfaces modifiées** :
+- `GetFrames.srv` : ajout de `sensor_msgs/PointCloud2 cloud` en réponse.
+- `CreatePointcloud.srv` : requête simplifiée à `mask` + `raw_cloud` (`depth`/`camera_info`/`rgb` retirés — plus besoin, la géométrie et la couleur sont déjà dans `raw_cloud`).
+
+**Convention d'encodage** : même dtype structuré `x/y/z/rgb` (float32, sans padding) des deux côtés (`pointcloud_publisher_node` écrit, `create_pointcloud_node` lit) — lu/écrit en `numpy.frombuffer`/`.tobytes()` direct, **jamais** `sensor_msgs_py.read_points()`, déjà identifié comme source de bugs de parsing sur ce projet (cf. "Pourquoi plus de nuage natif RealSense" plus bas).
+
+**Vérifié par test synthétique** : round-trip complet (écriture façon `pointcloud_publisher_node`, lecture façon `create_pointcloud_node`) sur un nuage 6×8 avec pixels `NaN` inclus — xyz/rgb identiques après round-trip, partition objet/scène exacte (masque + validité combinés correctement, pixel `NaN` dans le masque bien exclu du comptage). **Non testé avec une vraie caméra/un vrai pick** — à confirmer au prochain lancement réel.
 
 ## `pick_task_node`
 
@@ -49,14 +68,15 @@ Le paramètre n'est lu qu'une fois à l'init du node (`self.execute_pick = self.
 
 ## `camera_buffer_node`
 
-S'abonne à 3 topics RealSense et bufferise en mémoire (`_last_rgb`, `_last_depth`, `_last_camera_info`) uniquement le dernier message reçu de chacun — pas d'historique, pas de queue métier. Le service `get_frames` renvoie l'instantané courant des 3 buffers en un seul appel, mais **sans vérifier qu'ils correspondent au même instant caméra** (cf. "Synchronisation RGB/depth" ci-dessous — régression à corriger).
+S'abonne à 4 topics et bufferise en mémoire (`_last_rgb`, `_last_depth`, `_last_camera_info`, `_last_cloud`) uniquement le dernier message reçu de chacun — pas d'historique, pas de queue métier. Le service `get_frames` renvoie l'instantané courant des 4 buffers en un seul appel, mais **sans vérifier qu'ils correspondent au même instant caméra** (cf. "Synchronisation RGB/depth" ci-dessous — régression à corriger).
 
 Topics souscrits :
 - `/camera/camera/color/image_raw` (`sensor_msgs/Image`)
 - `/camera/camera/aligned_depth_to_color/image_raw` (`sensor_msgs/Image`)
 - `/camera/camera/color/camera_info` (`sensor_msgs/CameraInfo`)
+- `/pick/raw_pointcloud` (`sensor_msgs/PointCloud2`, publié en continu par `pointcloud_publisher_node`, cf. plus haut)
 
-**N'a plus de subscription au nuage natif RealSense** (`/camera/camera/depth/color/points`, `_last_cloud`/`_cloud_callback` retirés) — `GetFrames.srv` n'a plus de champ `cloud`. Ce topic n'est plus utilisé nulle part dans le pipeline : `pointcloud.enable` n'est même plus activé au launch (`franka_demo_bringup`), cf. "Pourquoi plus de nuage natif RealSense" plus bas.
+**Toujours pas de subscription au nuage natif RealSense** (`/camera/camera/depth/color/points`) — le nuage bufferisé aujourd'hui (`_last_cloud`) vient de notre propre `pointcloud_publisher_node` (déprojection manuelle depuis `aligned_depth_to_color`+`camera_info`), pas du driver RealSense. `pointcloud.enable` reste désactivé au launch (`franka_demo_bringup`), cf. "Pourquoi plus de nuage natif RealSense" plus bas — ce bug-là concerne uniquement le nuage *natif* du driver, sans rapport avec celui-ci.
 
 ### QoS
 
@@ -76,7 +96,7 @@ Risque concret : un `depth` arbitrairement plus vieux que le `rgb` envoyé à SA
 
 ## `create_pointcloud_node`
 
-Renommé depuis `filter_pointcloud_node` (qui avait lui-même été renommé depuis `create_pointcloud_node` dans un refactor précédent — cf. Historique CLAUDE.md racine pour le détail de cet aller-retour et pourquoi il était justifié dans les deux sens). **Déprojette manuellement** — n'utilise plus le nuage natif RealSense du tout.
+Renommé depuis `filter_pointcloud_node` (qui avait lui-même été renommé depuis `create_pointcloud_node` dans un refactor précédent — cf. Historique CLAUDE.md racine pour le détail de cet aller-retour et pourquoi il était justifié dans les deux sens). N'utilise plus le nuage natif RealSense du tout — et depuis le passage à `pointcloud_publisher_node` (cf. plus haut), ne déprojette même plus lui-même : il **filtre** un nuage déjà déprojeté en continu par ce dernier.
 
 ### Pourquoi plus de nuage natif RealSense
 
@@ -84,22 +104,22 @@ Testé en direct sur ce setup, confirmé par recherche : avec `align_depth.enabl
 
 Cette découverte a mis fin à une chaîne de trois bugs de parsing successifs rencontrés en essayant de faire coller ce nuage natif au masque (nuage non organisé, reshape `(width,height)` inversé, padding `row_step` non lu — tous dans `sensor_msgs_py`, lib ROS2 Jazzy, pas ce repo, cf. Historique CLAUDE.md racine pour le détail complet de cette investigation) : ces trois correctifs étaient chacun de vrais bugs, mais ne pouvaient de toute façon jamais résoudre le décalage de fond, puisqu'il venait du driver RealSense, pas du parsing côté ROS2. `pointcloud.enable` n'est donc plus activé du tout au launch (`franka_demo_bringup/launch/franka_demo.launch.py`).
 
-### Déprojection manuelle
+### Déprojection : déplacée dans `pointcloud_publisher_node`
 
-`handle_create_pointcloud` prend en requête (`CreatePointcloud.srv`, renommé depuis `FilterPointcloud.srv`) `mask` (SAM3) + `rgb` + `depth` (`aligned_depth_to_color`, garanti pixel-aligné sur la couleur *par construction* — fonctionnalité mature et indépendante du bug pointcloud ci-dessus) + `camera_info` (intrinsèques `K`, `float64[9]` row-major : `fx=k[0]`, `cx=k[2]`, `fy=k[4]`, `cy=k[5]`). Déprojection pinhole standard, vectorisée numpy (pas de boucle par pixel) dans `_deproject_xyz` :
+**Historique** (toujours vrai pour le *principe*, plus pour l'implémentation) : la géométrie 3D est calculée par déprojection pinhole standard depuis `aligned_depth_to_color` (garanti pixel-aligné sur la couleur *par construction*, fonctionnalité indépendante du bug natif RealSense ci-dessus) + `camera_info` (intrinsèques `K`) :
 ```
 depth_m = depth_raw (uint16, mm) * 0.001, NaN où depth_raw == 0 (pas de mesure valide)
 X = (u - cx) * depth_m / fx
 Y = (v - cy) * depth_m / fy
 Z = depth_m
 ```
-Élimine toute la classe de bugs `PointCloud2`/`row_step`/reshape rencontrée avec l'ancienne approche, puisqu'aucun nuage externe n'est plus parsé — la géométrie est calculée directement depuis l'image depth, dont on contrôle nous-mêmes l'indexation `(height, width)`.
+Vectorisé numpy (pas de boucle par pixel), **mais ce calcul vit maintenant dans `pointcloud_publisher_node._deproject_xyz`, pas ici** — `create_pointcloud_node` a été refactoré pour ne plus recevoir `rgb`/`depth`/`camera_info` du tout : `CreatePointcloud.srv` ne prend plus que `mask` + `raw_cloud` (`sensor_msgs/PointCloud2`, déjà déprojeté et coloré, cf. section "pointcloud_publisher_node" plus haut pour le détail complet de ce refactor et pourquoi). `handle_create_pointcloud` se contente de parser `raw_cloud` (`np.frombuffer`/`reshape`, cf. `_parse_raw_cloud`) puis d'appliquer le masque — élimine toujours la même classe de bugs `PointCloud2`/`row_step`/reshape, puisqu'aucun nuage *externe* (RealSense natif ou tiers) n'est parsé ici — seul notre propre nuage, avec un dtype fixe qu'on contrôle des deux côtés.
 
-**Vérifié par test synthétique** (point principal `(cx,cy)` → `(0,0,Z)`, mise à l'échelle linéaire pour un pixel excentré, `depth=0` → `NaN`) — **non re-testé sur le vrai D455** après ce correctif (à confirmer au prochain lancement réel que le décalage précédemment rapporté a disparu).
+**Vérifié par test synthétique** (déprojection : point principal `(cx,cy)` → `(0,0,Z)`, mise à l'échelle linéaire pour un pixel excentré, `depth=0` → `NaN` — logique inchangée, testée avant le déplacement du code ; round-trip complet du nouveau parsing dans `create_pointcloud_node`, cf. section plus haut) — **non re-testé sur le vrai D455** après ce refactor (à confirmer au prochain lancement réel).
 
 ### Nuage coloré (`x`/`y`/`z`/`rgb`)
 
-Les deux nuages publiés — objet (`/pick/pointcloud`, `response.cloud`) **et** scène (`/pick/scene_pointcloud`, `response.scene_cloud`) — portent une couleur par point. `_pack_rgb_float32` convertit `request.rgb` (BGR8 via `cv_bridge`) en un tableau `(height, width)` de `float32` dont les bits encodent en réalité un entier 24 bits `(r<<16)|(g<<8)|b` (`.view(np.float32)`, **reinterprétation de bits, pas un cast numérique** — piège classique si on utilisait `.astype()` à la place), calculé une seule fois et réutilisé pour les deux nuages. `_xyzrgb_cloud` construit chaque `PointCloud2` via un dtype structuré `[('x','f4'),('y','f4'),('z','f4'),('rgb','f4')]` + `PointField` custom (`_XYZRGB_FIELDS`), au lieu de `pc2.create_cloud_xyz32`. C'est la convention PCL/RViz standard pour les nuages colorés (color transformer `RGB8` de RViz) — la même que celle du nuage natif RealSense, d'où la demande initiale ("avoir le nuage créé en RGB8 comme celui publié par la caméra").
+Les deux nuages publiés — objet (`/pick/pointcloud`, `response.cloud`) **et** scène (`/pick/scene_pointcloud`, `response.scene_cloud`) — portent une couleur par point. Depuis le refactor `pointcloud_publisher_node` (cf. plus haut), `_pack_rgb_float32` (conversion BGR8 → `float32` dont les bits encodent en réalité un entier 24 bits `(r<<16)|(g<<8)|b`, `.view(np.float32)`, **reinterprétation de bits, pas un cast numérique**) vit dans `pointcloud_publisher_node`, calculé une seule fois par frame sur toute l'image ; `create_pointcloud_node` récupère ce `rgb` déjà packé directement depuis `raw_cloud` (`_parse_raw_cloud`), il n'en calcule plus rien lui-même. `_xyzrgb_cloud` (toujours dans `create_pointcloud_node`, pour republier objet/scène après filtrage) construit chaque `PointCloud2` via le même dtype structuré `[('x','f4'),('y','f4'),('z','f4'),('rgb','f4')]` + `PointField` custom (`_XYZRGB_FIELDS`), au lieu de `pc2.create_cloud_xyz32`. C'est la convention PCL/RViz standard pour les nuages colorés (color transformer `RGB8` de RViz) — la même que celle du nuage natif RealSense, d'où la demande initiale ("avoir le nuage créé en RGB8 comme celui publié par la caméra").
 
 Le masque objet (`object_mask`) et le masque scène (`scene_mask`) combinent chacun leur condition sur `mask_raw` **et** la validité du depth (`np.isfinite(xyz).all(axis=2)`, calculée une fois dans `valid` et réutilisée par les deux) en une seule passe, pour garder `xyz`/`rgb` alignés élément par élément lors de l'indexation — remplace l'ancien filtrage en deux temps (indexer par le masque, puis filtrer les `NaN` séparément), qui aurait désynchronisé les deux tableaux si fait en deux passes indépendantes. Le sous-échantillonnage de la scène (`_MAX_SCENE_POINTS`) applique le **même** `idx` à `scene_points` et `scene_colors` pour rester alignés après le `np.random.choice`.
 
