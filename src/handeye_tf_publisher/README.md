@@ -12,7 +12,7 @@ Complete guide to calibrate the `robot_base → camera_link` transform.
 
 ## Prerequisites
 
-- ROS2 installed and sourced
+- ROS2 installed
 - `realsense2_camera` driver installed and working
 
 ## 1.1 Clone external dependencies
@@ -57,7 +57,7 @@ Navigate to the folder of the desired family (e.g. `tag36h11/`, `tag25h9/`) and 
 
 **2. Scale up and generate a printable PDF** using `tools/apriltag_pdf_generator.py`:
 
-> ⚠️ **Not written yet** — this script is referenced by this guide but does not exist in `tools/` at the time of writing. Either write it (a PNG → scaled/labelled PDF generator, e.g. with `Pillow`+`reportlab`) or print the raw AprilTag PNG directly at a known DPI and skip this step — just make sure whatever method you use lets you hit an exact, measurable physical size.
+> **Not written yet** — this script is referenced by this guide but does not exist in `tools/` at the time of writing. Either write it (a PNG → scaled/labelled PDF generator, e.g. with `Pillow`+`reportlab`) or print the raw AprilTag PNG directly at a known DPI and skip this step — just make sure whatever method you use lets you hit an exact, measurable physical size.
 
 ```bash
 # Dependencies (isolated venv so this doesn't pollute the ROS2 Python env)
@@ -86,8 +86,6 @@ deactivate
 **4. Measure** the side of the **black square only** (white border excluded) → record in meters. This value goes into `size`.
 
 **5. Mount** on a rigid support.
-
-> ⚠️ **Rigidity matters more than it looks.** The hand-eye math assumes a perfectly *fixed* transform between `robot_effector_frame` and the tag for the entire calibration session. If the tag is mounted on an object simply **grasped** by the gripper (rather than bolted to the flange), any micro-slip in the grip directly corrupts every sample — this is a plausible contributor to residual error in the mm-to-cm range. Bolting the tag rigidly to `fp3_hand`/`fp3_hand_tcp` (e.g. a 3D-printed adapter) removes this uncertainty; a firmly-grasped cube is a workable but less precise alternative (cf. Step 1 below).
 
 ### Create the yaml config file
 

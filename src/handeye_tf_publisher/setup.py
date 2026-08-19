@@ -1,3 +1,5 @@
+import glob
+
 from setuptools import find_packages, setup
 
 package_name = 'handeye_tf_publisher'
@@ -11,6 +13,11 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', ['launch/publish.launch.py']),
+        # AprilTag config files (family/size/detector settings) -- installed
+        # so other packages (e.g. fp3_apriltag_demo) can reference them via
+        # FindPackageShare('handeye_tf_publisher') instead of a hardcoded
+        # source-tree path.
+        ('share/' + package_name + '/tags', glob.glob('tags/*.yaml')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
