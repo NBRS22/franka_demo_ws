@@ -145,6 +145,9 @@ def generate_launch_description():
                 'robot_task_manager.launch.py',
             )
         ),
+        launch_arguments={
+            'execute_pick': LaunchConfiguration('execute_pick'),
+        }.items(),
     )
 
     def _on_wait_exit(next_actions, failure_reason):
@@ -170,6 +173,16 @@ def generate_launch_description():
             'use_rviz',
             default_value='false',
             description='Launch RViz with the MoveIt config.',
+        ),
+        DeclareLaunchArgument(
+            'execute_pick',
+            default_value='false',
+            description=(
+                'If true, pick_task_node sends the goal to mtc_pick after '
+                'grasp generation. If false (default), the pipeline stops '
+                'after grasp generation/visualization -- no motion. '
+                'Forwarded to robot_task_manager.launch.py.'
+            ),
         ),
 
         # Robot control stack: starts immediately, independent of perception servers.

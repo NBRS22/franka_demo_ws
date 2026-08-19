@@ -77,6 +77,24 @@ Matche sur l'identité du device (vendor/product ID), **pas sur le port physique
 
 **Non re-testé en streaming prolongé** après ce fix — à confirmer (`dmesg -w` en parallèle d'un lancement complet) qu'aucune déconnexion ne revient sur une session plus longue qu'un simple test ponctuel.
 
+## Dépannage — "Frames didn't arrived within 5 seconds" en boucle (fix système, hors repo)
+
+Symptôme différent du précédent (pas de `usb disconnect` dans `dmesg`, le device reste énuméré) : `ros2 launch realsense2_camera rs_launch.py align_depth.enable:=true` démarre normalement (`RealSense Node Is Up!`, les deux profils s'ouvrent sans erreur), mais **aucune frame n'arrive jamais** — `backend-v4l2.cpp:2044 Frames didn't arrived within 5 seconds` en boucle toutes les ~5s, indéfiniment. Observé sur cette même machine, `power/control=on` déjà actif (donc pas une régression du fix précédent), aucun autre process n'a la caméra ouverte (`fuser /dev/video*` propre), aucune contention temps-réel (même symptôme avec et sans `ros2_control_node`/gravity compensation Franka actif en parallèle — hypothèse testée et écartée), rien d'anormal dans `journalctl -k` pendant la tentative (pas d'erreur xhci/bande-passante).
+
+**Cause identifiée** : aucune règle udev officielle RealSense n'était installée sur cette machine (le paquet `ros-jazzy-librealsense2` n'installe que la lib runtime, pas les règles udev — normalement posées par `scripts/setup_udev_rules.sh` du repo librealsense officiel, jamais exécuté ici). Conséquence vérifiée avec `rs-save-to-disk` (outil librealsense pur, sans ROS2 — installé avec `ros-jazzy-librealsense2` sous `/opt/ros/jazzy/bin/`) : échoue immédiatement avec `Permission denied` sur un `scan_element` IIO (accéléromètre). En creusant : `/dev/bus/usb/<bus>/<dev>` (le node USB brut de la caméra) appartenait à `root:root` mode `664` — `ngr` n'avait que lecture, malgré son appartenance au groupe `plugdev` (le *fichier* n'était pas dans ce groupe). Les flux couleur/depth passent par `uvcvideo`/V4L2 (`/dev/video*`, permissions correctes par défaut — d'où le démarrage "propre" en apparence), mais les séries D400 utilisent aussi des commandes de contrôle USB bas niveau (HWMON/vendor-specific, accès `libusb` direct au device brut) pour la synchro depth/couleur et le déclenchement effectif du flux — exactement l'accès qui était bloqué.
+
+**Fix appliqué** (système, pas dans ce repo — même famille que le fix `power/control` ci-dessus) : `/etc/udev/rules.d/99-realsense-libusb.rules` :
+```
+SUBSYSTEM=="usb", ATTR{idVendor}=="8086", MODE="0666", GROUP="plugdev"
+SUBSYSTEM=="usb_device", ATTR{idVendor}=="8086", MODE="0666", GROUP="plugdev"
+KERNEL=="iio:device*", ATTRS{name}=="HID-SENSOR-200073*", MODE="0666", GROUP="plugdev"
+KERNEL=="iio:device*", ATTRS{name}=="HID-SENSOR-200076*", MODE="0666", GROUP="plugdev"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="8086", MODE="0666", GROUP="plugdev"
+```
+Matche sur `idVendor=="8086"` (Intel) sans filtrer sur `idProduct` — plus large que la règle `power/control` (qui cible spécifiquement le D455, `0b5c`), volontairement, pour couvrir tout device RealSense sans avoir à lister chaque product ID. Après `sudo udevadm control --reload-rules && sudo udevadm trigger` **et un débranchement/rebranchement physique de la caméra** (nécessaire ici, contrairement au fix `power/control` — un attribut sysfs relisible en direct — parce qu'il faut que le device node USB soit recréé avec les nouvelles permissions), le streaming a fonctionné immédiatement. **Persistant d'un reboot à l'autre** comme toute règle udev dans `/etc/udev/rules.d/` — pas besoin de la réappliquer à chaque démarrage, `systemd-udevd` la relit automatiquement à la détection du device.
+
+**Non testé** : sur une machine sans aucune des deux règles udev (`power-control` et `libusb`), ni sur un scénario où seule celle-ci manquerait indépendamment de l'autre.
+
 ## Dépendances (`package.xml`)
 
 - `exec_depend` sur `robot_task_manager` et `realsense2_camera` — les seuls packages ROS2 référencés directement par le launch file (via `get_package_share_directory`). Les bridges (`gemini_er_bridge`/`sam3_bridge`/`graspgen_bridge`) ne sont **pas** des `exec_depend` ici : ils sont démarrés transitivement par `robot_task_manager.launch.py`, qui a déjà ses propres `exec_depend` dessus (cf. CLAUDE.md racine, Historique — ces `exec_depend` redondants ont été retirés d'ici).

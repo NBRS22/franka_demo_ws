@@ -185,7 +185,7 @@ def generate_launch_description():
         package='joint_state_publisher',
         executable='joint_state_publisher',
         name='joint_state_publisher',
-        parameters=[{'source_list': ['franka/joint_states', 'fp3_gripper/joint_states'], 'rate': 30}],
+        parameters=[{'source_list': ['franka/joint_states', 'franka_gripper/joint_states'], 'rate': 30}],
     )
 
     franka_robot_state_broadcaster = Node(

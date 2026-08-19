@@ -13,6 +13,7 @@ find_package(moveit_msgs REQUIRED)
 find_package(shape_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 find_package(franka_demo_interfaces REQUIRED)
 find_package(moveit_task_constructor_core REQUIRED)
 find_package(moveit_task_constructor_msgs REQUIRED)
@@ -50,7 +51,8 @@ target_include_directories(mtc_tasks PUBLIC
 ament_target_dependencies(mtc_tasks
   rclcpp
   moveit_task_constructor_core
-  geometry_msgs)
+  geometry_msgs
+  visualization_msgs)
 
 add_executable(pick_place_node src/pick_place_node.cpp)
 target_compile_features(pick_place_node PUBLIC c_std_99 cxx_std_17)
@@ -66,6 +68,7 @@ ament_target_dependencies(pick_place_node
   shape_msgs
   geometry_msgs
   sensor_msgs
+  visualization_msgs
   franka_msgs
   franka_demo_interfaces
 )

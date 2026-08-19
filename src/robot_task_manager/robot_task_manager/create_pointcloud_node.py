@@ -34,6 +34,8 @@ class CreatePointcloudNode(Node):
         # Params
         self.declare_parameter('scene_exclusion_margin_px', 15)
         self.scene_exclusion_margin_px = self.get_parameter('scene_exclusion_margin_px').value
+        self.declare_parameter('object_erosion_margin_px', 2)
+        self.object_erosion_margin_px = self.get_parameter('object_erosion_margin_px').value
 
         # ROS Publisher Topics
         self.cloud_pub = self.create_publisher(PointCloud2, '/pick/pointcloud', 10)
@@ -88,13 +90,30 @@ class CreatePointcloudNode(Node):
         margin, scene points that are actually just noisy edge artifacts of the
         object itself end up right next to real grasp contact points, and GraspGen's
         collision filter (filter_colliding_grasps_fast, cf. graspgen_bridge) rejects
-        nearly every grasp as a false positive. The object cloud itself still uses the
-        un-dilated mask — only what counts as "scene" gets this margin.
+        nearly every grasp as a false positive. The object cloud itself uses the
+        eroded mask instead (cf. _erode_mask) — only what counts as "scene" gets this
+        outward margin.
         """
         if margin_px <= 0:
             return mask_raw
         kernel = np.ones((margin_px * 2 + 1, margin_px * 2 + 1), np.uint8)
         return cv2.dilate(mask_raw, kernel, iterations=1)
+
+    def _erode_mask(self, mask_raw, margin_px):
+        """Shrink the object mask by margin_px before it's used to build the object
+        cloud sent to GraspGen. Same root cause as _dilate_mask above (SAM3 edge
+        imprecision + RealSense depth noise concentrated right at the object
+        boundary), but the mirror-image symptom: noisy boundary points end up *inside*
+        the object cloud instead of leaking into the scene cloud, distorting the
+        surface geometry GraspGen's diffusion sampler conditions on. Trimming a small
+        margin off the mask before deprojecting the object removes those points
+        without eroding so much that a genuinely small object loses too much of its
+        cloud.
+        """
+        if margin_px <= 0:
+            return mask_raw
+        kernel = np.ones((margin_px * 2 + 1, margin_px * 2 + 1), np.uint8)
+        return cv2.erode(mask_raw, kernel, iterations=1)
 
     def _xyzrgb_cloud(self, header, xyz_points, rgb_points):
         structured = np.zeros(xyz_points.shape[0], dtype=_XYZRGB_DTYPE)
@@ -126,7 +145,17 @@ class CreatePointcloudNode(Node):
                 return response
 
             valid = np.isfinite(xyz).all(axis=2)
-            object_mask = (mask_raw > 0) & valid
+            eroded_mask = self._erode_mask(mask_raw, self.object_erosion_margin_px)
+            if not eroded_mask.any():
+                # Object too small/thin for this erosion margin — falling back to the
+                # raw mask keeps the object cloud non-empty rather than silently
+                # trimming a small object away to nothing.
+                self.get_logger().warn(
+                    f"object_erosion_margin_px={self.object_erosion_margin_px} erodes the "
+                    "mask to empty — falling back to the un-eroded mask for this request"
+                )
+                eroded_mask = mask_raw
+            object_mask = (eroded_mask > 0) & valid
 
             points = xyz[object_mask]
             colors = rgb[object_mask]

@@ -2,13 +2,25 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
     return LaunchDescription([
+
+        DeclareLaunchArgument(
+            'execute_pick',
+            default_value='false',
+            description=(
+                'If true, pick_task_node sends the goal to mtc_pick after '
+                'grasp generation. If false (default), the pipeline stops '
+                'after grasp generation/visualization -- no motion.'
+            ),
+        ),
 
         # --- bridge nodes ---
         Node(
@@ -65,6 +77,10 @@ def generate_launch_description():
             executable='pick_task_node',
             name='pick_task_node',
             output='screen',
+            parameters=[{
+                'execute_pick': ParameterValue(
+                    LaunchConfiguration('execute_pick'), value_type=bool),
+            }],
         ),
 
     ])

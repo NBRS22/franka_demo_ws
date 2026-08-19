@@ -7,9 +7,11 @@
     gripper_action_name: "/franka_gripper/grasp"
     gripper_move_action_name: "/franka_gripper/move"
 
-    filter.min_height_above_table: 0.02
+    filter.enabled: true
+    filter.min_height_above_table: 0.005
     filter.max_approach_tilt_deg: 45.0
     filter.max_reach: 0.85
+    filter.top_down_priority_tilt_deg: 30.0
 
     approach.min_distance: 0.02
     approach.max_distance: 0.10

@@ -16,6 +16,37 @@ Orchestration du pick : bufferise les frames caméra, gère la déprojection/gé
 | `pick_task_node` | `pick_task_node.py` | `execute_pick_task` | séquenceur du pick (appelle tous les autres services) |
 | `create_pointcloud_node` | `create_pointcloud_node.py` | `create_pointcloud` | déprojette l'objet (et la scène) depuis depth+K, masqué par SAM3 |
 
+## `pick_task_node`
+
+### Bug corrigé : deadlock par callback group, bloquait l'enchaînement de picks jusqu'à 120s
+
+**Symptôme observé en réel** : après un pick (réussi ou échoué), le pipeline restait bloqué jusqu'à ~120s avant d'accepter le pick suivant — `command_bridge_node` timeout à 60s (`command_bridge_timeout`) bien avant que `pick_task_node` ne redevienne disponible, et la requête suivante (`Pick task received`) n'apparaissait dans les logs de `pick_task_node` qu'environ 120.0s après le début de la précédente, peu importe si celle-ci avait réussi rapidement ou échoué quasi instantanément côté `pick_place_node` (ex. `0/N` poses passant le filtre géométrique, qui `abort()` l'action en quelques ms côté C++).
+
+**Cause racine** : `self.frame_client`/`sam3_client`/`create_pointcloud_client`/`graspgen_client` (les 4 clients de service) ont chacun leur propre `ReentrantCallbackGroup` explicite — mais `self._mtc_pick_client` (l'`ActionClient` vers `mtc_pick`) n'en avait pas, et retombait donc sur le groupe par défaut du node (`MutuallyExclusiveCallbackGroup`, un seul callback actif à la fois). Or `handle_pick_task` (le service `execute_pick_task`, lui aussi sur ce groupe par défaut faute de `callback_group` explicite) reste bloqué du début à la fin du pick dans `_execute_pick` → `event.wait(timeout=120.0)`. Les callbacks internes de l'`ActionClient` (`_on_goal_response`/`_on_result`, ceux qui livrent justement le résultat attendu par `event.wait`) étaient sur ce **même** groupe mutuellement exclusif — donc ne pouvaient jamais s'exécuter tant que `handle_pick_task` occupait le seul slot du groupe. Deadlock circulaire, cassé uniquement par le timeout codé en dur de 120s dans `_execute_pick`, indépendamment de la vitesse réelle de réponse de `pick_place_node`.
+
+**Fix** : `self._mtc_pick_client = ActionClient(self, MtcPick, 'mtc_pick', callback_group=ReentrantCallbackGroup())` — même pattern que les 4 clients de service. `handle_pick_task`/`execute_pick_task` reste volontairement sur le groupe par défaut (mutuellement exclusif) : un seul pick à la fois peut être traité par `pick_task_node`, ce qui reste voulu (évite deux séquences de pick qui s'entrelaceraient avant même d'atteindre le garde-fou `busy_` de `pick_place_node`) — seul l'`ActionClient` avait besoin d'un groupe séparé pour ne plus être bloqué par le service qui l'appelle.
+
+**Non re-testé en conditions réelles après ce fix** — à confirmer au prochain lancement que l'enchaînement de picks successifs ne marque plus de pause de ~120s.
+
+### Paramètre `execute_pick` — arrêter le pipeline avant MTC (visualisation seule)
+
+`self.declare_parameter('execute_pick', False)` : si `false` (défaut), `handle_pick_task` s'arrête après génération/visualisation des grasps — `_execute_pick` (et donc `mtc_pick`) n'est jamais appelé, exactement le comportement d'origine du pipeline avant le branchement de l'exécution MTC. Un `warn` le rappelle à chaque pick. Utile pour itérer sur la qualité des grasps générés (cf. planner GraspMoE, `filter.top_down_priority_tilt_deg`...) sans faire bouger le bras.
+
+Câblé de bout en bout via les launch files (pas juste le défaut Python) :
+```
+franka_demo_bringup/launch/franka_demo.launch.py   (DeclareLaunchArgument 'execute_pick', défaut 'false')
+  → robot_task_manager/launch/robot_task_manager.launch.py (idem, transmis via launch_arguments)
+    → Node(pick_task_node, parameters=[{'execute_pick': ParameterValue(LaunchConfiguration('execute_pick'), value_type=bool)}])
+```
+`ParameterValue(..., value_type=bool)` nécessaire — un `LaunchConfiguration` est toujours une string ("true"/"false") au niveau `launch`, sans cette conversion explicite `pick_task_node` recevrait une string là où `declare_parameter` attend un bool (type inféré du défaut Python `False`), ce qui lèverait une erreur de type de paramètre ROS2 au démarrage du node.
+
+```bash
+ros2 launch franka_demo_bringup franka_demo.launch.py execute_pick:=true   # pipeline complet, jusqu'au pick réel
+ros2 launch franka_demo_bringup franka_demo.launch.py                     # défaut : grasps générés/visualisés, pas d'exécution
+```
+
+Le paramètre n'est lu qu'une fois à l'init du node (`self.execute_pick = self.get_parameter(...).value`) — pas de bascule à chaud via `ros2 param set` sans relancer `pick_task_node`.
+
 ## `camera_buffer_node`
 
 S'abonne à 3 topics RealSense et bufferise en mémoire (`_last_rgb`, `_last_depth`, `_last_camera_info`) uniquement le dernier message reçu de chacun — pas d'historique, pas de queue métier. Le service `get_frames` renvoie l'instantané courant des 3 buffers en un seul appel, mais **sans vérifier qu'ils correspondent au même instant caméra** (cf. "Synchronisation RGB/depth" ci-dessous — régression à corriger).
@@ -89,6 +120,16 @@ Corrigé : `_dilate_mask(mask_raw, margin_px)` (`cv2.dilate`, noyau `(2*margin_p
 **Vérifié par test synthétique** (masque carré 20×20, marge 10px) : l'anneau de 10px autour de l'objet est bien exclu du nuage de scène après dilatation, le nuage objet reste inchangé. **Non re-testé avec le vrai pipeline GraspGen** — à confirmer au prochain lancement réel que `Collision filter : X/Y grasps collision-free` (log `graspgen_bridge_node`) redevient non-nul. `collision_threshold` (paramètre ROS2 de `graspgen_bridge_node`, cf. CLAUDE.md `graspgen_bridge`) a aussi été abaissé de `0.02` à `0.01`m en parallèle — plus petit = filtre plus permissif, contre-intuitif. Si `0/Y` persiste malgré les deux correctifs combinés, augmenter encore `scene_exclusion_margin_px` et/ou baisser encore `collision_threshold`.
 
 **Vérifié par test synthétique** (déprojection sur un depth synthétique + masque partiel) : `object_points`/`scene_points` restent des complémentaires exacts (avant dilatation). **Non testé avec un vrai depth RealSense/une vraie scène** (table, objets, bruit capteur réel).
+
+#### Érosion du masque avant construction du nuage objet
+
+Même cause racine que la dilatation ci-dessus (imprécision du bord de masque SAM3 + bruit de profondeur RealSense concentré pile à cet endroit), mais côté symptôme miroir : ces points de bord bruités ne fuitaient pas seulement vers la scène, ils contaminaient aussi directement le nuage **objet** envoyé à GraspGen, faussant la géométrie de surface sur laquelle le sampler de diffusion se conditionne.
+
+`_erode_mask(mask_raw, margin_px)` (`cv2.erode`, même noyau `(2*margin_px+1)²` que `_dilate_mask`) érode le masque objet d'une marge (`object_erosion_margin_px`, paramètre ROS2, défaut `2` px — volontairement petit, contrairement aux `15` px de la dilatation côté scène : ici on retire de la matière à l'objet, une marge trop large tronquerait un petit objet réel) **avant** de construire `object_mask`. Le masque **scène** continue d'être dilaté depuis le masque brut non érodé (`_dilate_mask(mask_raw, ...)`, inchangé) — les deux corrections sont indépendantes, chacune sur son propre masque de travail.
+
+**Filet de sécurité** : si `object_erosion_margin_px` érode le masque jusqu'à le vider complètement (objet plus fin que la marge), `handle_create_pointcloud` détecte `eroded_mask` vide, logue un `warn`, et retombe sur le masque brut non érodé pour cette requête plutôt que d'échouer ou de renvoyer un nuage objet vide — l'érosion ne doit jamais faire disparaître un petit objet légitime. Réglable sans recompiler : `ros2 param set /create_pointcloud_node object_erosion_margin_px <valeur>`.
+
+**Vérifié par tests synthétiques** : masque carré 40×40, marge 2px → nuage objet de 36×36=1296 points (pas de fallback déclenché) ; masque carré 4×4, marge 5px → érosion complète, fallback déclenché avec `warn`, nuage objet reste non-vide (16 points, le masque brut). **Non testé avec un vrai masque SAM3/depth RealSense** (bruit réel de bord de masque, pas juste un carré synthétique parfait).
 
 ## Dette technique spécifique à `camera_buffer_node`
 

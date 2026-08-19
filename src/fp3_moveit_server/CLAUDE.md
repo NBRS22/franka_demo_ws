@@ -273,6 +273,10 @@ Une seule action sur `command_router_node`, définie dans `franka_demo_interface
   \+ `ComputeIK` -> `ModifyPlanningScene`), s'arrête au premier qui planifie,
   ferme le gripper (`franka_gripper/Grasp`), attache l'objet à la planning
   scene, puis lève (`MoveRelative` +Z monde). Renvoie `used_pose_index`.
+  Depuis l'ajout de `prioritizeTopDown` (cf. ci-dessous), "dans l'ordre" ne
+  veut plus dire "dans l'ordre reçu de GraspGen" mais "par tilt croissant,
+  la pose la plus verticale d'abord" — l'ordre brut envoyé par
+  `pick_task_node` n'est plus celui réellement essayé.
 
 Clients never call `pick_place_node` directly — it is reachable only under
 `/internal/pick_place/mtc_pick`, wired in `bringup.launch.py` via
@@ -333,6 +337,100 @@ edited.
   pair. Hit live: `fp3_hand` vs `fp3_rightfinger` (an SRDF-disabled
   "Adjacent" pair) started failing IK checks, unrelated to target pose,
   right after the first (naive) version of this fix shipped.
+- **`prioritizeTopDown` reorders candidates before the try-loop, without
+  dropping any.** Added to force the straightest (most top-down) plannable
+  grasp to win, instead of leaving MTC to try candidates in whatever order
+  GraspGen happened to return them (which has no notion of verticality --
+  cf. root CLAUDE.md, diffusion sampler has no gravity/up conditioning).
+  After `filterPoses` (which can be bypassed entirely via
+  `filter.enabled=false`, cf. above -- the two are independent steps),
+  every surviving candidate is sorted by `approachTiltDeg(pose)` ascending
+  (`std::stable_sort`) -- most vertical first, most lateral last. MTC's
+  try-loop is unchanged (first that plans wins), so a lateral grasp is only
+  ever used as a last resort, once every straighter candidate has failed
+  IK/collision.
+  **Historique** : la première version (session précédente) faisait un tri
+  en deux passes -- un groupe "top-down" (`tilt <= filter.top_down_priority_tilt_deg`,
+  30° par défaut) trié par score GraspGen, puis le reste, aussi trié par
+  score -- nécessitant de faire transiter `scores` jusqu'à `pick_place_node`
+  via un nouveau champ `float64[] scores` sur `MtcPick.action` (toujours
+  présent, `goal->scores`, désormais utilisé uniquement par
+  `publishFilteredGraspMarkers` pour colorer le meilleur score en vert, plus
+  par `prioritizeTopDown`). Remplacé par un tri direct par tilt sur retour
+  utilisateur ("commencer avec les poses avec l'angle le plus droit") --
+  le score GraspGen n'entre plus du tout dans l'ordre d'essai, seul le tilt
+  compte désormais. `filter.top_down_priority_tilt_deg` reste utilisé, mais
+  uniquement pour le compte informatif loggé (`Tilt priority: N candidate(s)
+  ... M of them <= 30.0deg`), plus comme seuil de regroupement.
+  **Non testé en conditions réelles** -- à confirmer au prochain lancement
+  que le premier candidat essayé est bien celui au tilt le plus faible du
+  lot, et que le fallback vers un grasp plus latéral fonctionne toujours si
+  aucun candidat proche de la verticale ne plan.
+- **`/pick/executed_grasp_pose` (`geometry_msgs/PoseStamped`) published right
+  before the actual grasp motion executes**, not after. Hooked into
+  `mtc_tasks.cpp::planAndExecuteApproach` -- the only function that plans
+  *and* executes the grasp itself (`task.plan(1)` then, if it succeeded,
+  `task.execute(...)`) -- via a new optional `pose_pub` parameter, published
+  in the gap between those two calls. `pick_place_node`'s per-candidate
+  try-loop only reaches this point for the candidate that actually planned
+  successfully (candidates that fail `task.plan()` never reach the publish
+  call), so this topic reflects the grasp that is genuinely about to be
+  executed, not every candidate merely attempted. Publisher created once in
+  `MtcPickServer`'s constructor (`executed_grasp_pose_pub_`), not per-call.
+
+  **`/pick/executed_grasp_marker` (`visualization_msgs/Marker`, single
+  ARROW) ajouté juste après** : `/pick/executed_grasp_pose` reste une pose
+  brute (pour un consommateur programmatique) -- si affichée dans RViz via
+  un display `Pose` en mode `Arrow`, elle montre l'orientation **brute** de
+  la pose (axe de fermeture des doigts, +X local), pas la direction
+  d'approche, exactement le même piège que celui déjà corrigé sur
+  `/pick/grasp_markers` (cf. `graspgen_bridge/CLAUDE.md`). Plutôt que de
+  déformer la pose brute publiée sur `executed_grasp_pose` (elle doit rester
+  correcte pour un usage programmatique), un second topic dédié à
+  l'affichage porte le même traitement que
+  `visualize_grasps_node._approach_to_arrow_orientation`/
+  `_approach_axis_world` : pointe de flèche exactement sur le point de
+  grasp, orientation remappée pour que l'axe que RViz dessine (+X local du
+  marker) corresponde à l'axe d'approche réel (+Z local de la pose du
+  grasp). Réimplémenté en C++ dans `mtc_tasks.cpp` (fonctions statiques
+  `approachToArrowOrientation`/`approachAxisWorld`/`approachArrowMarker`,
+  namespace anonyme) plutôt que partagé avec le Python -- formules
+  identiques, transcription vérifiée constante par constante contre la
+  version Python déjà validée numériquement (2000+ rotations aléatoires,
+  cf. `graspgen_bridge/CLAUDE.md`). Couleur ambre/or (`r=1.0,g=0.85,b=0.0`)
+  pour se distinguer visuellement du vert/cyan de `/pick/grasp_markers`.
+  `visualization_msgs` ajouté comme dépendance explicite de ce package
+  (`package.xml`+`CMakeLists.txt`, cible `mtc_tasks` et `pick_place_node`)
+  -- absent avant, ne compilait que parce que tiré transitivement par les
+  headers MoveIt/MTC, même type de lacune que le `cv_bridge` manquant
+  corrigé historiquement dans `sam3_bridge` (cf. CLAUDE.md racine,
+  Historique).
+
+  **Non testé en conditions réelles** -- à confirmer au prochain lancement
+  qu'un message apparaît sur les deux topics juste avant que le bras ne
+  bouge, et que la flèche de `/pick/executed_grasp_marker` a bien sa pointe
+  sur le point de grasp avec l'orientation d'approche correcte dans RViz.
+
+  **`/pick/filtered_grasp_markers` (`visualization_msgs/MarkerArray`) ajouté
+  juste après** : montre tous les candidats qui ont survécu au filtre
+  géométrique (`filterPoses` -- hauteur table / portée / tilt), publié juste
+  après ce filtre dans `execute()` (avant que `prioritizeTopDown` ne les
+  réordonne -- même ensemble dans les deux cas, seul l'ordre change).
+  Rien publié si le filtre est vide (le goal abort de toute façon dans ce
+  cas) ou si `filter.enabled=false` bypass entièrement le filtre (alors
+  "survécu au filtre" == tous les candidats reçus, publiés tels quels).
+  Même convention visuelle que `graspgen_bridge/visualize_grasps_node.py` :
+  une flèche `ARROW` par candidat (pointe sur le point de grasp, orientation
+  = direction d'approche réelle, via les mêmes fonctions que
+  `/pick/executed_grasp_marker`), le meilleur score **parmi ce sous-
+  ensemble filtré** en vert opaque, les autres en cyan semi-transparent.
+  Les trois fonctions de remap (`approachToArrowOrientation`,
+  `approachAxisWorld`, `approachArrowMarker`) ont été sorties du namespace
+  anonyme de `mtc_tasks.cpp` vers `mtc_tasks.hpp`/`.cpp` (fonctions non-
+  anonymes, `approachArrowMarker` généralisée avec des paramètres
+  `ns`/`id`/couleur, défauts = l'usage amber `executed_grasp` d'origine)
+  pour être réutilisables ici sans dupliquer le code. **Non testé en
+  conditions réelles** -- à confirmer au prochain lancement.
 - **One MTC `Task` per candidate, tried in order**, not a single
   `FixedCartesianPoses` loaded with all candidates. This was a deliberate
   simplification: it makes `used_pose_index` trivial (it's just the loop
@@ -366,6 +464,76 @@ edited.
   controller_manager loads per-controller parameters through its own
   yaml-file mechanism, which silently ignores plain launch parameter dicts
   passed the normal way. No `franka_ros2_ws` file was touched.
+18. **Bug corrigé, trouvé en réel : le lift échouait systématiquement juste
+    après un grasp réussi**, message `"Lift failed (object remains
+    attached)"` (`Found a contact between 'table' ... and 'picked_object'`,
+    `move_group` annule toute l'exécution en vol dès le tout premier
+    waypoint du lift, avant même que le bras ait bougé — l'objet repose
+    encore sur la table au moment de l'attache, exactement là où il vient
+    d'être saisi).
+
+    **Premier correctif tenté (session précédente), confirmé sans effet en
+    re-testant en réel** : ajouter `"table"` à `attached.touch_links` dans
+    `attachObject()`, en supposant (par analogie avec l'usage de
+    `table.allowed_touch_links` dans `scene_setup_node`) que `touch_links`
+    alimente l'`AllowedCollisionMatrix`. **Faux** — vérifié directement
+    contre le source MoveIt (`moveit_core/planning_scene/src/planning_scene.cpp`,
+    `processAttachedCollisionObjectMsg`) : `touch_links` est transmis tel
+    quel à `RobotState::attachBody()` et ne sert *que* pour l'auto-collision
+    du corps attaché contre des **liens du robot** — il ne touche jamais
+    `acm_`. Ajouter `"table"` (un `CollisionObject` du monde, pas un lien)
+    à cette liste ne fait donc strictement rien ; le bug persistait
+    identique au prochain test réel.
+
+    **Vrai correctif** : même technique que `scene_setup_node` pour
+    `table`/`wall` (point 11) — récupérer l'ACM courante via
+    `/get_planning_scene` (nouveau client `get_scene_client_`), l'étendre
+    avec une entrée `(picked_object, table)` autorisée (nouvelle méthode
+    `extendAcm`, algorithme identique à celui de `scene_setup_node`,
+    dupliqué ici plutôt que partagé entre les deux nodes/exécutables), puis
+    l'envoyer dans le même diff que l'attache via
+    `diff.allowed_collision_matrix`. Comme pour le point 12 : ne jamais
+    construire une ACM depuis zéro, toujours étendre celle en vigueur
+    (`PlanningScene.allowed_collision_matrix` envoyée en diff *remplace*
+    la matrice entière plutôt que de la fusionner). `attached.touch_links
+    = hand_touch_links` reste inchangé et nécessaire (ce mécanisme-là
+    fonctionne correctement pour l'auto-collision pince/objet, seul le
+    cas "objet vs objet du monde" avait besoin de l'ACM explicite).
+    **Non re-testé en conditions réelles après ce second fix** -- à
+    confirmer au prochain lancement qu'un pick complet (grasp + lift)
+    réussit jusqu'au bout sans que `move_group` n'annule l'exécution.
+19. **Bug corrigé, trouvé par l'utilisateur en réel : `move_group` voyait
+    toujours la pince fermée pour le check de collision**, peu importe son
+    état physique réel -- causant des faux positifs de collision contre
+    `table` (approche/plan refusés alors que la vraie pince, ouverte,
+    n'aurait pas touché la table) et probablement une partie des vrais
+    `cartesian_reflex` observés en conditions réelles (le check plan-time
+    d'un côté disait "collision" à tort, tandis qu'à l'exécution le modèle
+    fermé pouvait aussi manquer de vraies collisions dans d'autres
+    configurations -- les deux symptômes viennent de la même cause : l'état
+    des joints de la pince utilisé par MoveIt ne reflète jamais l'état réel).
+
+    Cause : `bringup.launch.py` démarre un `joint_state_publisher`
+    (`source_list: ['franka/joint_states', 'fp3_gripper/joint_states']`) qui
+    fusionne les joint states du bras et de la pince en un seul topic
+    `/joint_states`, celui que `move_group`/`current_state_monitor` écoute
+    réellement. Mais `fp3_gripper/joint_states` n'existe pas -- le vrai nom
+    du topic publié par `franka_gripper_node` (driver réel *et* le
+    stand-in fake-hardware `fake_gripper_state_publisher.py`, tous deux dans
+    `franka_ros2_ws/src/franka_gripper/`) est `franka_gripper/joint_states`
+    (topic relatif `~/joint_states` du node nommé `franka_gripper`, sans
+    namespace). `joint_state_publisher` ne recevait donc jamais aucun
+    message pour les joints des doigts, et retombait sur son propre défaut
+    interne (`(min+max)/2` si l'intervalle ne contient pas 0, sinon `0` --
+    pour `finger_joint1`, `[0.0, 0.04]`, ça retombe sur `0.0` = fermé) publié
+    indéfiniment sur `/joint_states`.
+
+    Fixé en corrigeant le nom du topic dans `source_list`
+    (`'franka_gripper/joint_states'`). Une ligne. **Non re-testé en
+    conditions réelles** -- à confirmer au prochain lancement que l'état
+    des doigts dans RViz/la planning scene suit bien l'ouverture/fermeture
+    réelle de la pince, et que les faux positifs de collision contre la
+    table pendant l'approche (pince ouverte) disparaissent.
 
 ## Known limitations / not yet verified live
 

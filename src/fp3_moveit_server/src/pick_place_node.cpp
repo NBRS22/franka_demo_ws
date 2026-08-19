@@ -1,6 +1,8 @@
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <string>
 #include <thread>
@@ -11,9 +13,16 @@
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 
+#include "geometry_msgs/msg/pose_stamped.hpp"
+#include "visualization_msgs/msg/marker.hpp"
+#include "visualization_msgs/msg/marker_array.hpp"
+#include "moveit_msgs/msg/allowed_collision_entry.hpp"
+#include "moveit_msgs/msg/allowed_collision_matrix.hpp"
 #include "moveit_msgs/msg/attached_collision_object.hpp"
 #include "moveit_msgs/msg/planning_scene.hpp"
+#include "moveit_msgs/msg/planning_scene_components.hpp"
 #include "moveit_msgs/srv/apply_planning_scene.hpp"
+#include "moveit_msgs/srv/get_planning_scene.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
 #include "shape_msgs/msg/solid_primitive.hpp"
 
@@ -25,6 +34,7 @@
 using MtcPick = franka_demo_interfaces::action::MtcPick;
 using GoalHandleMtcPick = rclcpp_action::ServerGoalHandle<MtcPick>;
 using ApplyPlanningScene = moveit_msgs::srv::ApplyPlanningScene;
+using GetPlanningScene = moveit_msgs::srv::GetPlanningScene;
 
 namespace
 {
@@ -60,11 +70,14 @@ public:
     lift_params_.max_distance     = node_->declare_parameter<double>("lift.max_distance", 0.15);
 
     // Geometric prefilter thresholds
+    filter_enabled_ = node_->declare_parameter<bool>("filter.enabled", true);
     min_height_above_table_ =
       node_->declare_parameter<double>("filter.min_height_above_table", 0.02);
     max_approach_tilt_deg_ =
       node_->declare_parameter<double>("filter.max_approach_tilt_deg", 45.0);
     max_reach_ = node_->declare_parameter<double>("filter.max_reach", 0.85);
+    top_down_priority_tilt_deg_ =
+      node_->declare_parameter<double>("filter.top_down_priority_tilt_deg", 30.0);
 
     // Table top Z (used by the height filter) — derived from scene params.
     const std::vector<double> table_position =
@@ -95,6 +108,13 @@ public:
     gripper_ = std::make_unique<GripperController>(node_, grasp_action, move_action, simulate);
 
     scene_client_ = node_->create_client<ApplyPlanningScene>("apply_planning_scene");
+    get_scene_client_ = node_->create_client<GetPlanningScene>("get_planning_scene");
+    executed_grasp_pose_pub_ =
+      node_->create_publisher<geometry_msgs::msg::PoseStamped>("/pick/executed_grasp_pose", 10);
+    executed_grasp_marker_pub_ =
+      node_->create_publisher<visualization_msgs::msg::Marker>("/pick/executed_grasp_marker", 10);
+    filtered_grasp_markers_pub_ =
+      node_->create_publisher<visualization_msgs::msg::MarkerArray>("/pick/filtered_grasp_markers", 10);
 
     action_server_ = rclcpp_action::create_server<MtcPick>(
       node_,
@@ -118,6 +138,10 @@ private:
   rclcpp::Node::SharedPtr node_;
   rclcpp_action::Server<MtcPick>::SharedPtr action_server_;
   rclcpp::Client<ApplyPlanningScene>::SharedPtr scene_client_;
+  rclcpp::Client<GetPlanningScene>::SharedPtr get_scene_client_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr executed_grasp_pose_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr executed_grasp_marker_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr filtered_grasp_markers_pub_;
   std::unique_ptr<GripperController> gripper_;
   std::thread execution_thread_;
   std::atomic<bool> busy_{false};
@@ -126,9 +150,11 @@ private:
   ApproachParams approach_params_;
   LiftParams     lift_params_;
 
+  bool filter_enabled_;
   double min_height_above_table_;
   double max_approach_tilt_deg_;
   double max_reach_;
+  double top_down_priority_tilt_deg_;
   double table_top_z_;
 
   double open_width_;
@@ -182,6 +208,86 @@ private:
     gh->publish_feedback(fb);
   }
 
+  // Angle in degrees between a pose's local +Z (approach axis convention,
+  // cf. filterPoses below) and straight down (world -Z). 0 = pure top-down.
+  static double approachTiltDeg(const geometry_msgs::msg::Pose & p)
+  {
+    Eigen::Quaterniond q(p.orientation.w, p.orientation.x, p.orientation.y, p.orientation.z);
+    Eigen::Vector3d approach_axis = q * Eigen::Vector3d::UnitZ();
+    return std::acos(std::clamp(-approach_axis.z(), -1.0, 1.0)) * 180.0 / M_PI;
+  }
+
+  // Reorders candidates without dropping any: sorted by ascending approach
+  // tilt, most vertical (closest to pure top-down) tried first, most lateral
+  // tried last -- score plays no role in the order any more. MTC still
+  // tries each in order and stops at the first that plans, so this makes
+  // the straightest available candidate win whenever it's plannable at all,
+  // falling back to progressively more tilted ones only as needed.
+  // top_down_priority_tilt_deg_ no longer gates the order, only the count
+  // logged below (how many candidates are "near-vertical" by that threshold).
+  std::vector<FilteredPose> prioritizeTopDown(const std::vector<FilteredPose> & candidates)
+  {
+    std::vector<FilteredPose> ordered = candidates;
+    std::stable_sort(
+      ordered.begin(), ordered.end(),
+      [](const FilteredPose & a, const FilteredPose & b) {
+        return approachTiltDeg(a.pose.pose) < approachTiltDeg(b.pose.pose);
+      });
+
+    const size_t near_vertical = static_cast<size_t>(std::count_if(
+      ordered.begin(), ordered.end(),
+      [this](const FilteredPose & c) {
+        return approachTiltDeg(c.pose.pose) <= top_down_priority_tilt_deg_;
+      }));
+
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "Tilt priority: %zu candidate(s) tried in ascending-tilt order (most vertical "
+      "first), %zu of them <= %.1fdeg",
+      ordered.size(), near_vertical, top_down_priority_tilt_deg_);
+
+    return ordered;
+  }
+
+  // Publishes the candidates that survived filterPoses (before
+  // prioritizeTopDown reorders them -- same set either way) as a
+  // MarkerArray on /pick/filtered_grasp_markers, same visual convention as
+  // graspgen_bridge/visualize_grasps_node.py's grasp_markers: one ARROW per
+  // candidate, tip on the grasp point, orientation showing the approach
+  // direction, best score in this set opaque green, the rest semi-
+  // transparent cyan.
+  void publishFilteredGraspMarkers(
+    const std::vector<FilteredPose> & filtered, const std::vector<double> & scores)
+  {
+    if (!filtered_grasp_markers_pub_ || filtered.empty()) return;
+
+    int best_i = 0;
+    double best_score = -std::numeric_limits<double>::infinity();
+    for (size_t i = 0; i < filtered.size(); ++i) {
+      const auto & c = filtered[i];
+      const double s = (c.original_index >= 0 &&
+        static_cast<size_t>(c.original_index) < scores.size())
+        ? scores[c.original_index] : 0.0;
+      if (s > best_score) {
+        best_score = s;
+        best_i = static_cast<int>(i);
+      }
+    }
+
+    visualization_msgs::msg::MarkerArray marker_array;
+    visualization_msgs::msg::Marker clear;
+    clear.action = visualization_msgs::msg::Marker::DELETEALL;
+    marker_array.markers.push_back(clear);
+
+    for (size_t i = 0; i < filtered.size(); ++i) {
+      const bool is_best = (static_cast<int>(i) == best_i);
+      marker_array.markers.push_back(approachArrowMarker(
+        filtered[i].pose, "filtered_grasps", static_cast<int32_t>(i),
+        0.0f, is_best ? 1.0f : 0.7f, is_best ? 0.2f : 1.0f, is_best ? 1.0f : 0.4f));
+    }
+    filtered_grasp_markers_pub_->publish(marker_array);
+  }
+
   // Geometric prefilter: removes poses that are below the table, out of reach,
   // or whose approach axis is too tilted. Preserves original indices.
   // Assumes poses are in fp3_link0 frame and that local +Z is the approach direction.
@@ -189,7 +295,23 @@ private:
     const std::vector<geometry_msgs::msg::PoseStamped> & poses)
   {
     std::vector<FilteredPose> kept;
-    const double max_tilt_rad = max_approach_tilt_deg_ * M_PI / 180.0;
+
+    if (!filter_enabled_) {
+      // Temporary bypass (filter.enabled=false): skip table-height/reach/tilt
+      // checks entirely and hand every candidate straight to MTC, which does
+      // real IK + collision checking anyway (cf. pick_place_node internals,
+      // fp3_moveit_server/CLAUDE.md) -- this prefilter is an efficiency/bias
+      // heuristic on top of that, not a safety boundary.
+      RCLCPP_WARN(
+        node_->get_logger(),
+        "Geometric filter DISABLED (filter.enabled=false) -- passing all %zu "
+        "pose(s) directly to MTC", poses.size());
+      kept.reserve(poses.size());
+      for (size_t i = 0; i < poses.size(); ++i) {
+        kept.push_back({static_cast<int>(i), poses[i]});
+      }
+      return kept;
+    }
 
     for (size_t i = 0; i < poses.size(); ++i) {
       const auto & p = poses[i].pose;
@@ -209,21 +331,18 @@ private:
         continue;
       }
 
-      Eigen::Quaterniond q(
-        p.orientation.w, p.orientation.x, p.orientation.y, p.orientation.z);
-      Eigen::Vector3d approach_axis = q * Eigen::Vector3d::UnitZ();
-      const double tilt = std::acos(std::clamp(-approach_axis.z(), -1.0, 1.0));
+      const double tilt_deg = approachTiltDeg(p);
       // Temporary INFO-level logging to diagnose GraspGen's approach-axis
       // convention against fp3_hand_tcp (+Z expected) -- see CLAUDE.md.
       RCLCPP_INFO(
         node_->get_logger(),
         "Pose %zu: pos=(%.3f, %.3f, %.3f) reach=%.2fm tilt=%.1fdeg", i,
-        p.position.x, p.position.y, p.position.z, reach, tilt * 180.0 / M_PI);
-      if (tilt > max_tilt_rad) {
+        p.position.x, p.position.y, p.position.z, reach, tilt_deg);
+      if (tilt_deg > max_approach_tilt_deg_) {
         RCLCPP_WARN(
           node_->get_logger(),
           "Pose %zu filtered: approach too tilted (%.1f deg > %.1f deg)", i,
-          tilt * 180.0 / M_PI, max_approach_tilt_deg_);
+          tilt_deg, max_approach_tilt_deg_);
         continue;
       }
 
@@ -235,6 +354,50 @@ private:
     return kept;
   }
 
+  // Same algorithm as scene_setup_node's extendAcm (table/wall ACM setup at
+  // startup) -- takes the *current* ACM (never build one from scratch: a
+  // partial ACM sent via ApplyPlanningScene silently replaces the whole
+  // matrix instead of merging, wiping every SRDF-derived disable_collisions
+  // pair, cf. dev history #12) and appends a new row for `object_name`,
+  // allowed against whichever `allowed_names` are already present as
+  // existing ACM entries.
+  moveit_msgs::msg::AllowedCollisionMatrix extendAcm(
+    moveit_msgs::msg::AllowedCollisionMatrix acm, const std::string & object_name,
+    const std::vector<std::string> & allowed_names)
+  {
+    const size_t original_size = acm.entry_names.size();
+
+    std::vector<size_t> allowed_indices;
+    for (const auto & name : allowed_names) {
+      auto it = std::find(acm.entry_names.begin(), acm.entry_names.end(), name);
+      if (it == acm.entry_names.end()) {
+        RCLCPP_WARN(
+          node_->get_logger(),
+          "attachObject ACM: '%s' not found in ACM (scene_setup_node not run yet?), skipping",
+          name.c_str());
+        continue;
+      }
+      allowed_indices.push_back(static_cast<size_t>(std::distance(acm.entry_names.begin(), it)));
+    }
+
+    for (auto & entry : acm.entry_values) {
+      entry.enabled.push_back(false);
+    }
+    for (size_t idx : allowed_indices) {
+      acm.entry_values[idx].enabled[original_size] = true;
+    }
+
+    moveit_msgs::msg::AllowedCollisionEntry object_row;
+    object_row.enabled.assign(original_size + 1, false);
+    for (size_t idx : allowed_indices) {
+      object_row.enabled[idx] = true;
+    }
+    acm.entry_names.push_back(object_name);
+    acm.entry_values.push_back(object_row);
+
+    return acm;
+  }
+
   // Attaches object_id to tcp_frame in the planning scene so that lift is
   // planned with the object's collision geometry included.
   bool attachObject()
@@ -244,6 +407,11 @@ private:
     attached.object.header.frame_id = mtc_params_.tcp_frame;
     attached.object.id = mtc_params_.object_id;
     attached.object.operation = attached.object.ADD;
+    // Self-collision only (attached body vs these robot links) -- touch_links
+    // is passed straight to RobotState::attachBody and never touches the
+    // AllowedCollisionMatrix, verified against MoveIt source. It cannot be
+    // used to permit touching a *world* CollisionObject like "table" --
+    // that needs an explicit ACM entry, built below.
     attached.touch_links = mtc_params_.hand_touch_links;
 
     shape_msgs::msg::SolidPrimitive box;
@@ -262,6 +430,28 @@ private:
     diff.is_diff = true;
     diff.robot_state.is_diff = true;
     diff.robot_state.attached_collision_objects.push_back(attached);
+
+    // The object is attached right where it was grasped -- still resting on
+    // the table at that instant. Without an ACM entry allowing
+    // (object_id, "table"), the very first lift waypoint (before the arm has
+    // moved at all) gets flagged as a table/picked_object collision and
+    // move_group aborts the whole trajectory ("Lift failed (object remains
+    // attached)", found live). Fetch the live ACM and extend it -- same
+    // technique as scene_setup_node's table/wall setup.
+    if (!get_scene_client_->wait_for_service(std::chrono::seconds(5))) {
+      RCLCPP_WARN(
+        node_->get_logger(),
+        "/get_planning_scene unavailable, attaching without a table ACM entry "
+        "-- the lift may be rejected as a false table collision");
+    } else {
+      auto acm_request = std::make_shared<GetPlanningScene::Request>();
+      acm_request->components.components =
+        moveit_msgs::msg::PlanningSceneComponents::ALLOWED_COLLISION_MATRIX;
+      auto acm_future = get_scene_client_->async_send_request(acm_request);
+      const auto current_acm = acm_future.get()->scene.allowed_collision_matrix;
+      diff.allowed_collision_matrix =
+        extendAcm(current_acm, mtc_params_.object_id, {"table"});
+    }
 
     if (!scene_client_->wait_for_service(std::chrono::seconds(10))) {
       RCLCPP_ERROR(node_->get_logger(), "/apply_planning_scene unavailable");
@@ -290,6 +480,8 @@ private:
       goal_handle->abort(result);
       return;
     }
+    publishFilteredGraspMarkers(filtered, goal->scores);
+    filtered = prioritizeTopDown(filtered);
 
     // 2. Open gripper once before the approach loop
     publish_status(goal_handle, "opening");
@@ -313,7 +505,10 @@ private:
       }
       publish_status(goal_handle, "approaching");
       RCLCPP_INFO(node_->get_logger(), "Trying pose %d...", candidate.original_index);
-      if (planAndExecuteApproach(node_, mtc_params_, approach_params_, candidate.pose)) {
+      if (planAndExecuteApproach(
+          node_, mtc_params_, approach_params_, candidate.pose,
+          executed_grasp_pose_pub_, executed_grasp_marker_pub_))
+      {
         approach_ok = true;
         used_index = candidate.original_index;
         break;

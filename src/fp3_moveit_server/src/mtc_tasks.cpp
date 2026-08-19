@@ -1,5 +1,7 @@
 #include "fp3_moveit_server/mtc_tasks.hpp"
 
+#include <array>
+
 #include "moveit/task_constructor/task.h"
 #include "moveit/task_constructor/stages/current_state.h"
 #include "moveit/task_constructor/stages/connect.h"
@@ -13,11 +15,64 @@
 
 namespace mtc = moveit::task_constructor;
 
+namespace
+{
+// q_marker = q_grasp (x) R, R = (w=cos(-45deg), x=0, y=sin(-45deg), z=0).
+constexpr double kSqrt2Over2 = 0.70710678118654752440;
+constexpr double kArrowLength = 0.08;  // meters, matches visualize_grasps_node.py
+}  // namespace
+
+geometry_msgs::msg::Quaternion approachToArrowOrientation(const geometry_msgs::msg::Quaternion & q)
+{
+  geometry_msgs::msg::Quaternion out;
+  out.w = kSqrt2Over2 * (q.w + q.y);
+  out.x = kSqrt2Over2 * (q.x + q.z);
+  out.y = kSqrt2Over2 * (q.y - q.w);
+  out.z = kSqrt2Over2 * (q.z - q.x);
+  return out;
+}
+
+std::array<double, 3> approachAxisWorld(const geometry_msgs::msg::Quaternion & q)
+{
+  return {
+    2.0 * (q.x * q.z + q.w * q.y),
+    2.0 * (q.y * q.z - q.w * q.x),
+    1.0 - 2.0 * (q.x * q.x + q.y * q.y),
+  };
+}
+
+visualization_msgs::msg::Marker approachArrowMarker(
+  const geometry_msgs::msg::PoseStamped & pose,
+  const std::string & ns, int32_t id, float r, float g, float b, float a)
+{
+  const auto axis = approachAxisWorld(pose.pose.orientation);
+  visualization_msgs::msg::Marker m;
+  m.header = pose.header;
+  m.ns = ns;
+  m.id = id;
+  m.type = visualization_msgs::msg::Marker::ARROW;
+  m.action = visualization_msgs::msg::Marker::ADD;
+  m.pose.position.x = pose.pose.position.x - kArrowLength * axis[0];
+  m.pose.position.y = pose.pose.position.y - kArrowLength * axis[1];
+  m.pose.position.z = pose.pose.position.z - kArrowLength * axis[2];
+  m.pose.orientation = approachToArrowOrientation(pose.pose.orientation);
+  m.scale.x = kArrowLength;
+  m.scale.y = 0.012;
+  m.scale.z = 0.018;
+  m.color.r = r;
+  m.color.g = g;
+  m.color.b = b;
+  m.color.a = a;
+  return m;
+}
+
 bool planAndExecuteApproach(
   rclcpp::Node::SharedPtr node,
   const MtcParams & mtc_params,
   const ApproachParams & approach,
-  const geometry_msgs::msg::PoseStamped & pose)
+  const geometry_msgs::msg::PoseStamped & pose,
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub,
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr marker_pub)
 {
   mtc::Task task;
   task.setName("mtc_pick approach");
@@ -81,6 +136,17 @@ bool planAndExecuteApproach(
   {
     return false;
   }
+
+  // Planning succeeded for this candidate: it's the one about to be
+  // executed. Publish before execute() so a listener sees it ahead of the
+  // actual motion, not after the fact.
+  if (pose_pub) {
+    pose_pub->publish(pose);
+  }
+  if (marker_pub) {
+    marker_pub->publish(approachArrowMarker(pose));
+  }
+
   return task.execute(*task.solutions().front()) ==
     moveit::core::MoveItErrorCode::SUCCESS;
 }

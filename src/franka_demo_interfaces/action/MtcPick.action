@@ -1,4 +1,8 @@
 geometry_msgs/PoseStamped[] grasp_poses
+# GraspGen confidence score per pose, same order/length as grasp_poses. Used
+# by pick_place_node to rank candidates by score within each tilt priority
+# group (top-down-ish first, then the rest) -- not used for anything else.
+float64[] scores
 ---
 bool success
 string message

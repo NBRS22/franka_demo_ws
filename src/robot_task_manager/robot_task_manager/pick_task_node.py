@@ -30,14 +30,31 @@ class PickTaskNode(Node):
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
 
+        # Params
+        self.declare_parameter('execute_pick', False)
+        self.execute_pick = self.get_parameter('execute_pick').value
+
         # ROS Service Clients
         self.frame_client = self.create_client(GetFrames, 'get_frames', callback_group=ReentrantCallbackGroup())
         self.sam3_client = self.create_client(SegmentObject, 'segment_object', callback_group=ReentrantCallbackGroup())
         self.create_pointcloud_client = self.create_client(CreatePointcloud, 'create_pointcloud', callback_group=ReentrantCallbackGroup())
         self.graspgen_client = self.create_client(GenerateGraspPose, 'generate_grasp_pose', callback_group=ReentrantCallbackGroup())
 
-        # Action Client — calls command_router_node's public mtc_pick action
-        self._mtc_pick_client = ActionClient(self, MtcPick, 'mtc_pick')
+        # Action Client — calls command_router_node's public mtc_pick action.
+        # Needs its own ReentrantCallbackGroup, same as the 4 service clients
+        # above: without it, this defaults to the node's default
+        # MutuallyExclusiveCallbackGroup -- the SAME group handle_pick_task
+        # itself runs in. Since handle_pick_task blocks synchronously in
+        # _execute_pick waiting for this action's result, the action client's
+        # own internal goal-response/result callbacks (which deliver that
+        # result) could never be scheduled while handle_pick_task holds the
+        # group's only execution slot -- a deadlock only ever broken by
+        # _execute_pick's own hardcoded 120s timeout, regardless of how fast
+        # pick_place_node actually responded. Confirmed live: a failed pick
+        # (0/N poses passed pick_place_node's filter, which aborts near-
+        # instantly) still took ~120.0s before the next /execute_pick_task
+        # request was even received by handle_pick_task.
+        self._mtc_pick_client = ActionClient(self, MtcPick, 'mtc_pick', callback_group=ReentrantCallbackGroup())
 
         # ROS Service Servers
         self.create_service(ExecutePickTask, 'execute_pick_task', self.handle_pick_task)
@@ -127,13 +144,14 @@ class PickTaskNode(Node):
         )
         return robot_poses
 
-    def _execute_pick(self, grasp_poses: list) -> tuple:
+    def _execute_pick(self, grasp_poses: list, scores: list) -> tuple:
         """Send grasp poses to the mtc_pick action and wait for the result."""
         if not self._mtc_pick_client.wait_for_server(timeout_sec=10.0):
             return False, 'mtc_pick action server unavailable'
 
         goal = MtcPick.Goal()
         goal.grasp_poses = grasp_poses
+        goal.scores = [float(s) for s in scores]
 
         event = threading.Event()
         result_holder = {}
@@ -179,7 +197,22 @@ class PickTaskNode(Node):
             grasps = self._generate_grasps(pc.cloud, pc.scene_cloud)
 
             robot_poses = self._transform_poses(grasps.grasps)
-            ok, msg = self._execute_pick(robot_poses)
+
+            if not self.execute_pick:
+                # TEMP (execute_pick=false): stop after grasp generation/
+                # visualization, same as the pipeline's original scope before
+                # MTC execution was wired in -- mtc_pick is never called.
+                self.get_logger().warn(
+                    'execute_pick=false -- skipping mtc_pick, grasps generated/visualized only'
+                )
+                response.success = True
+                response.message = (
+                    f'grasps generated (execution skipped) — seg={mask.score:.3f} '
+                    f'grasps={len(grasps.grasps.poses)}'
+                )
+                return response
+
+            ok, msg = self._execute_pick(robot_poses, grasps.scores)
             if not ok:
                 raise RuntimeError(f'pick failed: {msg}')
 

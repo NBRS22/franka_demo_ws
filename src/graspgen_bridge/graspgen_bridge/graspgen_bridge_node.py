@@ -21,9 +21,10 @@ class GraspGenBridgeNode(Node):
         self.declare_parameter('graspgen_bridge_host', '127.0.0.1')
         self.declare_parameter('graspgen_bridge_port', 5558)
         self.declare_parameter('num_grasps', 200)
-        self.declare_parameter('topk_num_grasps', 10)
-        self.declare_parameter('collision_threshold', 0.01)
+        self.declare_parameter('topk_num_grasps', 200)
+        self.declare_parameter('collision_threshold', 0.005)
         self.declare_parameter('max_scene_points', 8192)
+        self.declare_parameter('enable_collision_filter', False)
         # GraspGen's raw grasp matrices are expressed at the gripper's base
         # link (panda_hand/fp3_hand), not the TCP (fingertip) frame -- cf.
         # GraspGen's docs/GRIPPER_DESCRIPTION.md ("depth" = extent from base
@@ -60,6 +61,7 @@ class GraspGenBridgeNode(Node):
         self.topk_num_grasps = self.get_parameter('topk_num_grasps').value
         self.collision_threshold = self.get_parameter('collision_threshold').value
         self.max_scene_points = self.get_parameter('max_scene_points').value
+        self.enable_collision_filter = self.get_parameter('enable_collision_filter').value
         self.hand_to_tcp_offset_z = self.get_parameter('hand_to_tcp_offset_z').value
         self.planner = self.get_parameter('planner').value
         self.moe_num_yaws = self.get_parameter('moe_num_yaws').value
@@ -217,7 +219,12 @@ class GraspGenBridgeNode(Node):
                 return response
 
             scene_xyz = None
-            if request.scene_cloud.data:
+            if not self.enable_collision_filter:
+                self.get_logger().warn(
+                    'Collision filter DISABLED (enable_collision_filter=false) -- '
+                    'scene_cloud ignored, grasps sent to MTC unfiltered'
+                )
+            elif request.scene_cloud.data:
                 scene_xyz = self._pointcloud2_to_numpy(request.scene_cloud)
                 self.get_logger().info(
                     f'Scene point cloud (collision context) : {scene_xyz.shape[0]} points'
@@ -247,6 +254,15 @@ class GraspGenBridgeNode(Node):
 
             self.get_logger().info(f'{len(scores)} grasps received')
 
+            if len(scores) == 0:
+                response.success = False
+                response.message = (
+                    'GraspGen returned 0 grasps'
+                    + (' (all rejected by collision filter)'
+                       if result.get('num_grasps_before_collision_filter') else '')
+                )
+                return response
+
             branch_tags = result.get('branch_tags')
             if branch_tags is not None:
                 n_diff = branch_tags.count('diff')
@@ -255,6 +271,10 @@ class GraspGenBridgeNode(Node):
                 self.get_logger().info(
                     f'Planner={result.get("planner", self.planner)}: '
                     f'{n_diff} diffusion + {n_obb} OBB grasp(s){skipped_note}'
+                )
+                best_idx = int(np.argmax(scores))
+                self.get_logger().info(
+                    f'Best grasp (score={scores[best_idx]:.3f}) : branch={branch_tags[best_idx]}'
                 )
 
             n_before_collision = result.get('num_grasps_before_collision_filter')
