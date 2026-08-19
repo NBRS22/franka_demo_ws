@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>fp3_apriltag_demo</name>
+  <version>0.1.0</version>
+  <description>
+    Reads one AprilTag detection from /detections, estimates its 3D pose via
+    solvePnP, transforms it into fp3_link0 via TF (handeye_tf_publisher's
+    calibration), and sends it as a single-candidate mtc_pick goal -- a
+    physical, real-hardware check that the eye-on-base calibration is
+    accurate: if the pick succeeds, the arm reached and grasped exactly
+    where the camera says the tag is.
+  </description>
+  <maintainer email="n.elbachari@gmail.com">nour el bachari</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>apriltag_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>franka_demo_interfaces</depend>
+
+  <exec_depend>fp3_moveit_server</exec_depend>
+  <exec_depend>handeye_tf_publisher</exec_depend>
+  <exec_depend>apriltag_ros</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
