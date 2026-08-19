@@ -12,3 +12,8 @@ __pycache__/
 .vscode/
 *.swp
 .DS_Store
+
+# Dépendances externes clonées manuellement (cf. handeye_tf_publisher/README.md)
+# — pas vendorées dans ce repo, à cloner soi-même.
+src/apriltag_ros/
+src/easy_handeye2/
