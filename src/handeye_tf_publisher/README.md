@@ -183,7 +183,7 @@ ros2 action send_goal /franka_gripper/grasp franka_msgs/action/Grasp \
 
 ```bash
 ros2 launch realsense2_camera rs_launch.py \
-  align_depth.enable:=true
+  align_depth.enable:=true initial_reset:=true
 ```
 
 Verify the image stream is running:
@@ -191,7 +191,7 @@ Verify the image stream is running:
 ros2 topic hz /camera/camera/color/image_raw
 ```
 
-> If you get repeated `Frames didn't arrived within 5 seconds` warnings with no actual USB disconnect in `dmesg`, this machine is missing the RealSense udev permission rules (`/etc/udev/rules.d/99-realsense-libusb.rules`) — see `franka_demo_bringup/CLAUDE.md`, "Dépannage" section, for the fix. If it happens again after the node has run fine once already (only on relaunch), try `sudo usbreset 8086:0b5c` before relaunching — same section documents why `initial_reset:=true` is not a reliable substitute.
+> If you get repeated `Frames didn't arrived within 5 seconds` warnings with no actual USB disconnect in `dmesg`, this machine may be missing the RealSense udev permission rules (`/etc/udev/rules.d/99-realsense-libusb.rules`) — see `franka_demo_bringup/CLAUDE.md`, "Dépannage" section, for that fix. If the rules are already present and it's happening on *every* relaunch (not a one-time thing), that's a different, since-diagnosed issue: `initial_reset:=true` (already in the command above) is the real fix — it triggers a firmware-level hardware reset equivalent to a physical unplug/replug, which `sudo usbreset <vendor>:<product>` does **not** achieve (that only resets the USB link, not the camera's own firmware state). The known catch: the node sometimes tries to reopen the device before the reset's USB re-enumeration finishes, crashing with `Device or resource busy` → `No such device` within a few seconds — if that happens, just relaunch the same command again immediately (no need to unplug anything). `franka_demo_bringup/scripts/launch_realsense_with_retry.sh` automates exactly this retry for the full pipeline's own launch files — see `franka_demo_bringup/CLAUDE.md`, "Dépannage — RealSense a besoin d'un reset à chaque lancement", for the full root-cause writeup.
 
 ---
 

@@ -24,6 +24,7 @@
 
   <exec_depend>fp3_moveit_server</exec_depend>
   <exec_depend>handeye_tf_publisher</exec_depend>
+  <exec_depend>franka_demo_bringup</exec_depend>
   <exec_depend>apriltag_ros</exec_depend>
   <exec_depend>python3-opencv</exec_depend>
   <exec_depend>python3-numpy</exec_depend>

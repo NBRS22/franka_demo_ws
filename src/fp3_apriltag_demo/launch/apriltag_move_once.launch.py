@@ -1,5 +1,5 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -42,34 +42,27 @@ def generate_launch_description():
         }.items(),
     )
 
-    # scoped=True/forwarding=False: same isolation as franka_demo_bringup's
-    # own RealSense inclusion, so rs_launch.py's own LaunchConfiguration
-    # names (it declares plenty, e.g. 'log_level') don't leak into / collide
-    # with this file's.
-    #
-    # initial_reset deliberately NOT set to true here (franka_demo_bringup's
-    # own inclusion does set it) -- verified this session that
-    # initial_reset:=true is unreliable: the wrapper node tries to reopen
-    # the device too soon after the reset it triggers, causing a
-    # "Device or resource busy" -> "No such device" crash cascade. If the
-    # camera needs a hardware reset between runs, use `sudo usbreset
-    # <vendor>:<product>` before launching instead (cf.
-    # franka_demo_bringup/CLAUDE.md, "Dépannage").
-    realsense = GroupAction(
-        scoped=True,
-        forwarding=False,
-        actions=[
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource(
-                    PathJoinSubstitution(
-                        [FindPackageShare('realsense2_camera'), 'launch', 'rs_launch.py'])),
-                launch_arguments={
-                    'align_depth.enable': 'true',
-                    'rgb_camera.color_profile': REALSENSE_COLOR_PROFILE,
-                    'depth_module.depth_profile': REALSENSE_DEPTH_PROFILE,
-                }.items(),
-            ),
+    # Same retry-wrapped RealSense launch as franka_demo_bringup/franka_demo.launch.py
+    # (cf. that file's own comment + franka_demo_bringup/CLAUDE.md "Dépannage"):
+    # initial_reset:=true triggers a real USB re-enumeration of the D455, the only
+    # thing confirmed to fix "Depth stream start failure" without a physical
+    # unplug/replug -- but the ROS wrapper node sometimes reopens the device before
+    # that finishes, crashing within a few seconds. launch_realsense_with_retry.sh
+    # retries automatically when that happens. Running it as its own OS process
+    # also gives it its own LaunchConfiguration namespace for free -- the old
+    # GroupAction(scoped=True, forwarding=False) isolation is no longer needed.
+    realsense = ExecuteProcess(
+        cmd=[
+            PathJoinSubstitution(
+                [FindPackageShare('franka_demo_bringup'), 'scripts', 'launch_realsense_with_retry.sh']),
+            'align_depth.enable:=true',
+            'initial_reset:=true',
+            'log_level:=warn',
+            f'rgb_camera.color_profile:={REALSENSE_COLOR_PROFILE}',
+            f'depth_module.depth_profile:={REALSENSE_DEPTH_PROFILE}',
         ],
+        name='realsense',
+        output='screen',
     )
 
     handeye_tf_publisher = IncludeLaunchDescription(

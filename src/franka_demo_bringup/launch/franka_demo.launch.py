@@ -5,7 +5,6 @@ from launch.actions import (
     DeclareLaunchArgument,
     EmitEvent,
     ExecuteProcess,
-    GroupAction,
     IncludeLaunchDescription,
     RegisterEventHandler,
 )
@@ -96,27 +95,30 @@ def generate_launch_description():
         }.items(),
     )
 
-    realsense = GroupAction(
-        scoped=True,
-        forwarding=False,
-        actions=[
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource(
-                    os.path.join(
-                        get_package_share_directory('realsense2_camera'),
-                        'launch',
-                        'rs_launch.py',
-                    )
-                ),
-                launch_arguments={
-                    'align_depth.enable': 'true',
-                    'initial_reset': 'true',
-                    'log_level': 'warn',
-                    'rgb_camera.color_profile': REALSENSE_COLOR_PROFILE,
-                    'depth_module.depth_profile': REALSENSE_DEPTH_PROFILE,
-                }.items(),
-            ),
+    # Runs `ros2 launch realsense2_camera rs_launch.py ...` as its own OS
+    # process (via launch_realsense_with_retry.sh) rather than an
+    # IncludeLaunchDescription in this same launch context. Two reasons:
+    # 1. initial_reset:=true triggers a real USB disconnect/re-enumerate of
+    #    the D455 (confirmed the only thing that reliably fixes "Depth
+    #    stream start failure" -- plain `usbreset` doesn't, cf.
+    #    CLAUDE.md "Dépannage"), and the ROS wrapper node sometimes tries
+    #    to reopen the device before that finishes, crashing within a few
+    #    seconds ("Device or resource busy" -> "No such device"). The
+    #    wrapper script retries automatically when that happens.
+    # 2. Being a separate process gives it its own LaunchConfiguration
+    #    namespace for free, same isolation the old GroupAction(scoped=True,
+    #    forwarding=False) existed for -- no longer needed.
+    realsense = ExecuteProcess(
+        cmd=[
+            os.path.join(bringup_share, 'scripts', 'launch_realsense_with_retry.sh'),
+            'align_depth.enable:=true',
+            'initial_reset:=true',
+            'log_level:=warn',
+            f'rgb_camera.color_profile:={REALSENSE_COLOR_PROFILE}',
+            f'depth_module.depth_profile:={REALSENSE_DEPTH_PROFILE}',
         ],
+        name='realsense',
+        output='screen',
     )
 
     # Reads calibration from ~/.ros2/easy_handeye2/calibrations/<calibration_name>.calib

@@ -12,17 +12,9 @@ Porté depuis un package du même nom dans un autre workspace (`~/Documents/FP3/
 - **La partie "déplacement" a changé** : l'ancienne version appelait une action `move_to_pose` (`motion_server_node`), supprimée depuis ce projet. Ici, `mtc_pick` fait déjà tout en un seul appel (`opening -> approaching -> grasping -> attaching -> lifting -> detaching`, cf. `fp3_moveit_server/CLAUDE.md`) — donc `apriltag_move_once_node` n'a plus besoin de ses propres clients d'action pince ni d'une étape séparée de retour à une pose "ready" ; il détecte le tag, calcule la pose, envoie un seul goal `mtc_pick`, logue le résultat.
 - **`handeye_tf_publisher` est inclus directement dans le launch file** (`launch/apriltag_move_once.launch.py`), contrairement à l'ancienne version qui le supposait déjà lancé ailleurs — cohérent avec le fait que ce package sert spécifiquement à vérifier *cette* calibration.
 
-## Ce qui n'est pas lancé par ce package
+## Lancement — package auto-contenu
 
-`realsense2_camera` et `apriltag_ros` (le node de détection) ne sont **pas** inclus dans `apriltag_move_once.launch.py` — à lancer séparément (mêmes commandes que pendant la session de calibration, cf. `handeye_tf_publisher/README.md`) :
-
-```bash
-ros2 launch realsense2_camera rs_launch.py align_depth.enable:=true
-ros2 run apriltag_ros apriltag_node --ros-args \
-  -r image_rect:=/camera/camera/color/image_raw \
-  -r camera_info:=/camera/camera/color/camera_info \
-  --params-file ~/franka_demo_ws/src/handeye_tf_publisher/tags/36h11_0_0.04.yaml
-```
+`apriltag_move_once.launch.py` démarre **tout lui-même** : `fp3_moveit_server/bringup.launch.py` (move_group, ros2_control, scene_setup_node, pick_place_node, command_router_node), `realsense2_camera` (`align_depth.enable:=true`, `initial_reset:=true`, profils color/depth 1280x720x30, via `franka_demo_bringup/scripts/launch_realsense_with_retry.sh` — même mécanisme de retry qu'`franka_demo.launch.py`, cf. `franka_demo_bringup/CLAUDE.md` "Dépannage — RealSense a besoin d'un reset à chaque lancement"), `handeye_tf_publisher/publish.launch.py` (la calibration eye-on-base vérifiée), `apriltag_ros`/`apriltag_node` (mêmes remappings/params-file que pendant la session de calibration), et `apriltag_move_once_node`. Une seule commande suffit — rien à lancer séparément (contrairement à l'ancienne version de ce package dans l'autre workspace, qui supposait caméra+calibration déjà démarrées ailleurs). `exec_depend` sur `franka_demo_bringup` ajouté pour cette raison (le script est localisé via `FindPackageShare('franka_demo_bringup')`).
 
 ## Lancer la vérification
 

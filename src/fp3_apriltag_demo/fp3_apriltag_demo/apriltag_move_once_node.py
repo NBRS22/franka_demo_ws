@@ -46,6 +46,24 @@ def rotation_matrix_to_quaternion(r):
     return x, y, z, w
 
 
+def _quaternion_to_euler_deg(x, y, z, w):
+    # Standard intrinsic ZYX (yaw-pitch-roll) extraction, degrees. Diagnostic
+    # display only -- not used for any control/planning decision.
+    sinr_cosp = 2.0 * (w * x + y * z)
+    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+    roll = np.degrees(np.arctan2(sinr_cosp, cosr_cosp))
+
+    sinp = 2.0 * (w * y - z * x)
+    sinp = np.clip(sinp, -1.0, 1.0)
+    pitch = np.degrees(np.arcsin(sinp))
+
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    yaw = np.degrees(np.arctan2(siny_cosp, cosy_cosp))
+
+    return roll, pitch, yaw
+
+
 # Real-hardware check that the eye-on-base calibration (handeye_tf_publisher)
 # is accurate: reads one AprilTag detection, computes its 3D pose via
 # solvePnP + TF (through fp3_link0 -> camera_link -> ... published by
@@ -150,6 +168,18 @@ class AprilTagMoveOnceNode(Node):
                 f"Could not transform tag pose from '{pose_camera.header.frame_id}' to "
                 f"'{self.robot_frame}' yet, will retry on the next detection: {ex}")
             return
+
+        # Logged unconditionally (even when force_gripper_down discards it below) --
+        # a calibration-induced rotation bias would show up here numerically, without
+        # having to risk a real grasp attempt at an orientation mtc_pick's own tilt
+        # filter might reject outright for unrelated (kinematic) reasons.
+        native_q = pose_robot.pose.orientation
+        roll_deg, pitch_deg, yaw_deg = _quaternion_to_euler_deg(
+            native_q.x, native_q.y, native_q.z, native_q.w)
+        self.get_logger().info(
+            f"Tag {self.target_tag_id} native orientation in '{self.robot_frame}': "
+            f"roll={roll_deg:.1f}deg pitch={pitch_deg:.1f}deg yaw={yaw_deg:.1f}deg "
+            f"(quaternion x={native_q.x:.3f} y={native_q.y:.3f} z={native_q.z:.3f} w={native_q.w:.3f})")
 
         if self.force_gripper_down:
             # 180-degree rotation about X: maps the TCP's local +Z (the

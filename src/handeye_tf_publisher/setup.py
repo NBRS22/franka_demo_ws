@@ -32,6 +32,7 @@ setup(
     entry_points={
         'console_scripts': [
             'handeye_tf_publisher = handeye_tf_publisher.publisher_node:main',
+            'calibration_pose_tour = handeye_tf_publisher.calibration_pose_tour_node:main',
         ],
     },
 )
