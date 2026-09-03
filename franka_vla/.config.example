@@ -1,0 +1,15 @@
+# Franka VLA backend configuration
+# Copy to .config and edit values
+
+# ZMQ camera stream (PUB socket publishing [b"rgb", <jpeg_bytes>])
+ZMQ_CAMERA_URL=tcp://localhost:5556
+
+# ZMQ robot command socket (REQ/REP — receives action dicts, replies with result dicts)
+ZMQ_ROBOT_URL=tcp://localhost:5559
+
+# Timeout for robot commands in milliseconds (VLA can take time — default 120 s)
+ZMQ_ROBOT_TIMEOUT_MS=120000
+
+# Server
+BACKEND_HOST=0.0.0.0
+BACKEND_PORT=8889

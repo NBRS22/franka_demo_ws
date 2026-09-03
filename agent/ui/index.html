@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Accenture | Gemini Robotics ER 2.0 - Robot Orchestrator</title>
+    <link rel="stylesheet" href="/static/style.css?v=7" />
+  </head>
+  <body>
+    <!-- Accenture Top Bar -->
+    <div class="acn-topbar">
+      <a class="acn-logo" href="#">
+        <img src="/static/accenture-logo.png" alt="Accenture" />
+        <div class="acn-logo-divider"></div>
+        <span class="acn-app-name">Gemini Robotics ER 2.0 - Robot Orchestrator</span>
+      </a>
+      <div class="acn-topbar-right">
+      </div>
+    </div>
+
+    <div class="container">
+      <header style="display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 1rem; padding-bottom: 0.75rem; border-bottom: 1px solid var(--border-color);">
+        <div class="agent-selector-wrapper">
+          <button id="agentSelectorBtn" class="agent-selector-btn">
+            <span id="agentSelectorLabel">Human</span>
+            <span class="agent-selector-caret">&#9662;</span>
+          </button>
+          <div id="agentDropdown" class="agent-dropdown hidden">
+            <div class="agent-option active" data-agent="human">Human</div>
+            <div class="agent-option" data-agent="spot">Spot</div>
+            <div class="agent-option" data-agent="franka">Franka</div>
+            <div class="agent-option" data-agent="franka_vla">Franka VLA</div>
+          </div>
+        </div>
+        <div style="display: flex; gap: 10px; align-items: center; margin-left: auto;">
+          <button id="chatToggle" class="btn" title="Toggle chat panel"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg></button>
+        </div>
+      </header>
+
+      <div id="main-content">
+        <div class="main-body">
+          <main>
+            <div class="app-section" id="app-section">
+
+              <div class="app-grid">
+                <div class="left-panel">
+                  <div class="video-container">
+                    <div id="video-placeholder">Start camera to send video</div>
+                    <video id="video-preview" autoplay playsinline muted></video>
+                    <img id="robot-cam-img" class="robot-cam-img hidden" alt="Robot Camera" />
+                    <canvas id="video-canvas" style="display: none"></canvas>
+                    <canvas id="overlay-canvas"></canvas>
+                    <!-- Overlay Controls (Franka only) -->
+                    <div id="overlay-controls" class="overlay-controls hidden">
+                      <span class="overlay-controls-title">Overlays</span>
+                      <label class="overlay-check">
+                        <input type="checkbox" id="ov-pipeline" checked>
+                        <span class="ov-dot" style="background:#8A8A8A"></span>
+                        Steps
+                      </label>
+                      <label class="overlay-check">
+                        <input type="checkbox" id="ov-gemini" checked>
+                        <span class="ov-dot" style="background:#FF9800"></span>
+                        Pick Target
+                      </label>
+                      <label class="overlay-check">
+                        <input type="checkbox" id="ov-sam3" checked>
+                        <span class="ov-dot" style="background:#A100FF"></span>
+                        Segmentation
+                      </label>
+                      <label class="overlay-check">
+                        <input type="checkbox" id="ov-grasp" checked>
+                        <span class="ov-dot" style="background:#00E5FF"></span>
+                        Grasp Pose
+                      </label>
+                      <label class="overlay-check">
+                        <input type="checkbox" id="ov-place" checked>
+                        <span class="ov-dot" style="background:#00C853"></span>
+                        Place Target
+                      </label>
+                    </div>
+                    <!-- Instruction overlay: shown when Gemini calls run_instruction for human -->
+                    <div id="instruction-overlay" style="display:none; position:absolute; inset:0; background:rgba(0,0,0,0.78); z-index:20; flex-direction:column; align-items:center; justify-content:center; gap:14px; padding:20px; box-sizing:border-box; text-align:center; border-radius:inherit;">
+                      <div style="width:3px; height:36px; background:#A100FF; margin-bottom:4px;"></div>
+                      <p id="instruction-text" style="color:#fff; font-size:15px; font-weight:500; margin:0; line-height:1.5; max-width:90%;"></p>
+                      <button id="instruction-done-btn" class="btn btn-primary" style="padding:10px 30px; font-size:14px; font-weight:600; border-radius:2px; margin-top:8px;">Done</button>
+                    </div>
+                  </div>
+                  <!-- Pipeline Phase Bar (Franka only) -->
+                  <div id="pipeline-bar" class="pipeline-bar hidden">
+                    <div class="pipeline-step" data-step="detect">Pointing</div>
+                    <div class="pipeline-arrow">›</div>
+                    <div class="pipeline-step" data-step="segment">Segmentation</div>
+                    <div class="pipeline-arrow">›</div>
+                    <div class="pipeline-step" data-step="plan">Grasp Pose Generation</div>
+                    <div class="pipeline-arrow">›</div>
+                    <div class="pipeline-step" data-step="pick">Picking</div>
+                    <div class="pipeline-arrow">›</div>
+                    <div class="pipeline-step" data-step="transport">Pointing</div>
+                    <div class="pipeline-arrow">›</div>
+                    <div class="pipeline-step" data-step="place">Placing</div>
+                  </div>
+                  <div id="status-label" class="status-label disconnected">Disconnected</div>
+
+                  <div class="controls-grid">
+                    <div class="controls-row">
+                      <div class="model-selector-wrapper">
+                        <button id="endpointSelectorBtn" class="btn model-selector-btn">
+                          <span id="endpointSelectorLabel">Gemini Live API</span>
+                          <span class="model-selector-caret">&#9662;</span>
+                        </button>
+                        <div id="endpointDropdown" class="model-dropdown hidden">
+                          <div class="model-option active" data-endpoint="gemini_live_api">Gemini Live API</div>
+                        </div>
+                      </div>
+                      <div class="model-selector-wrapper">
+                        <button id="modelSelectorBtn" class="btn model-selector-btn">
+                          <span id="modelSelectorLabel">models/gemini-3.1-flash-live-preview</span>
+                          <span class="model-selector-caret">&#9662;</span>
+                        </button>
+                        <div id="modelDropdown" class="model-dropdown hidden">
+                          <!-- Filled dynamically by JS -->
+                        </div>
+                      </div>
+                      <button id="audioToggleBtn" class="btn active" title="Toggle Audio (Mute/Unmute)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 010 14.14"/><path d="M15.54 8.46a5 5 0 010 7.07"/></svg></button>
+                      <button id="connectBtn" class="btn" title="Connect to Agent"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 11-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg></button>
+                      <button id="micBtn" class="btn" title="Start Microphone"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+
+          </main>
+        </div>
+
+        <div id="chat-sidebar" class="chat-sidebar">
+          <div class="sidebar-header">Conversation</div>
+          <div class="sidebar-content" style="flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative;">
+            <div class="chat-log" id="chat-log"></div>
+          </div>
+          <div class="input-area">
+            <input type="text" id="textInput" placeholder="Type a message..." />
+            <button id="sendBtn" class="btn btn-primary">Send</button>
+            <button id="imageBtn" class="btn" title="Send an image to Gemini"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg></button>
+            <input type="file" id="imageFileInput" accept="image/*" style="display:none" />
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="modal hidden">
+      <div class="modal-content modal-content-lg">
+        <div class="modal-sidebar">
+          <ul>
+            <li id="modal-tab-config" class="active" data-tab="config">Agent Config</li>
+            <li id="modal-tab-appearance" data-tab="appearance">Appearance</li>
+          </ul>
+        </div>
+        <div class="modal-body">
+          <!-- Agent Config Tab -->
+          <div id="modal-panel-config" class="modal-panel">
+            <h2 id="config-title">Agent Config</h2>
+            <div class="config-grid">
+              <div class="config-item">
+                <label>Model</label>
+                <code id="config-model">—</code>
+              </div>
+              <div class="config-item">
+                <label>Response Modality</label>
+                <code id="config-modality">—</code>
+              </div>
+              <div class="config-item">
+                <label>TTS</label>
+                <code id="config-tts">—</code>
+              </div>
+              <div class="config-item">
+                <label>TTS Voice</label>
+                <code id="config-tts-voice">—</code>
+              </div>
+              <div class="config-item">
+                <label>Endpoint</label>
+                <code id="config-endpoint">—</code>
+              </div>
+              <div class="config-item">
+                <label>Service Address</label>
+                <code id="config-service">—</code>
+              </div>
+            </div>
+            <h3>Tools</h3>
+            <div id="config-tools" class="config-tools">—</div>
+            <h3>Thinking Level</h3>
+            <div class="config-help-text" style="font-size: 11px; color: var(--text-secondary); margin-bottom: 5px; margin-top: -5px;">Controls how much the model thinks before responding.</div>
+            <div style="margin-bottom: 10px;">
+              <select id="config-thinking-level" class="form-select" style="width: 100%;">
+                <option value="none">None (disabled)</option>
+                <option value="minimal">Minimal</option>
+                <option value="low" selected>Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+              </select>
+            </div>
+
+            <h3>Developer Instruction</h3>
+            <div class="config-help-text" style="font-size: 11px; color: var(--text-secondary); margin-bottom: 5px; margin-top: -5px;">Persistent across turns and queries, but mutable by developers (e.g. "You are a chatbot for Uber.")</div>
+            <textarea id="config-developer-prompt" class="config-prompt" style="width: 100%; height: 300px; resize: vertical; box-sizing: border-box;"></textarea>
+            <h3>Heartbeat Text</h3>
+            <div class="config-help-text" style="font-size: 11px; color: var(--text-secondary); margin-bottom: 5px; margin-top: -5px;">The text sent as <code>realtime_input.text</code> with each heartbeat. The built-in default is shown until overridden.</div>
+            <textarea id="config-heartbeat-text" class="config-prompt" style="width: 100%; height: 100px; resize: vertical; box-sizing: border-box;"></textarea>
+            <h3>Heartbeat Settings</h3>
+            <div class="config-grid" style="margin-bottom: 15px;">
+              <div class="config-item">
+                <label>Interval (seconds)</label>
+                <input type="number" id="config-heartbeat-interval" step="0.1" min="0.1" />
+              </div>
+              <div class="config-item">
+                <label>Min Delay (seconds)</label>
+                <input type="number" id="config-heartbeat-min-delay" step="0.1" min="0.0" />
+              </div>
+              <div class="config-item" style="grid-column: span 2; flex-direction: row; align-items: center; gap: 8px; margin-top: 5px;">
+                <input type="checkbox" id="config-use-event-driven-heartbeat" style="margin: 0;" />
+                <label style="margin: 0; font-weight: normal;">Use Event-Driven Heartbeat</label>
+              </div>
+            </div>
+            <div style="display: flex; gap: 10px; margin-top: 10px;">
+              <button id="update-prompt-btn" class="btn btn-primary">Update Instructions</button>
+              <button id="reset-prompt-btn" class="btn" disabled>Reset to Default</button>
+            </div>
+          </div>
+          <!-- Appearance Tab -->
+          <div id="modal-panel-appearance" class="modal-panel hidden">
+            <h2>Appearance</h2>
+            <div class="theme-options">
+              <label>
+                <input type="radio" name="theme" value="light" checked> Light
+              </label>
+              <label>
+                <input type="radio" name="theme" value="dark"> Dark
+              </label>
+            </div>
+          </div>
+          <button id="close-modal-btn" class="btn">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Custom Model Modal -->
+    <div id="custom-model-modal" class="modal hidden">
+      <div class="modal-content modal-content-sm">
+        <div class="modal-body">
+          <h2>Custom Model</h2>
+          <div class="custom-model-form">
+            <div class="form-group">
+              <label for="custom-model-input">Model Name</label>
+              <input type="text" id="custom-model-input" placeholder="e.g. models/gemini-2.5-flash-native-audio-latest" />
+            </div>
+            <div class="form-group">
+              <label for="custom-modality-select">Model Type</label>
+              <select id="custom-modality-select" class="form-select">
+                <option value="TEXT">Text Model (uses TTS)</option>
+                <option value="AUDIO">Audio Model (direct Live audio)</option>
+              </select>
+            </div>
+          </div>
+          <div class="custom-model-actions">
+            <button id="custom-model-cancel" class="btn">Cancel</button>
+            <button id="custom-model-apply" class="btn btn-primary">Apply</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Keyboard Shortcuts Modal -->
+    <div id="shortcuts-modal" class="modal hidden">
+      <div class="modal-content">
+        <h2>Keyboard Shortcuts</h2>
+        <table class="shortcuts-table">
+          <tr><td><kbd>Space</kbd></td><td>Toggle microphone</td></tr>
+          <tr><td><kbd>Esc</kbd></td><td>Close modal / Send stop</td></tr>
+          <tr><td><kbd>1-4</kbd></td><td>Switch agent</td></tr>
+          <tr><td><kbd>T</kbd></td><td>Toggle theme</td></tr>
+          <tr><td><kbd>?</kbd></td><td>Show shortcuts</td></tr>
+        </table>
+        <button onclick="this.parentElement.parentElement.classList.add('hidden')" class="btn">Close</button>
+      </div>
+    </div>
+    <!-- Latency Detail Panel (expands above footer) -->
+    <div id="latency-detail" class="latency-detail hidden">
+      <div class="latency-detail-section">
+        <h4>Server Breakdown</h4>
+        <div class="metric-row"><span class="metric-label">① Client OH</span> <span id="srv-client-val" class="metric-value">--</span> <span id="srv-client-count" class="metric-count"></span></div>
+        <div class="metric-row"><span class="metric-label">② Server OH</span> <span id="srv-server-val" class="metric-value">--</span> <span id="srv-server-count" class="metric-count"></span></div>
+        <div class="metric-row"><span class="metric-label">③ Prefill</span> <span id="srv-prefill-val" class="metric-value">--</span> <span id="srv-prefill-count" class="metric-count"></span></div>
+        <div class="metric-row"><span class="metric-label">④ Decode</span> <span id="srv-decode-val" class="metric-value">--</span> <span id="srv-decode-count" class="metric-count"></span></div>
+        <hr>
+        <div class="metric-row"><span class="metric-label">Srv TTFT</span> <span id="srv-ttft-val" class="metric-value">--</span> <span id="srv-ttft-count" class="metric-count"></span></div>
+        <div class="metric-row"><span class="metric-label">Client TTFT</span> <span id="srv-client-ttft-val" class="metric-value">--</span> <span id="srv-client-ttft-count" class="metric-count"></span></div>
+      </div>
+      <div class="latency-detail-section">
+        <h4>Token Usage</h4>
+        <div class="metric-row"><span class="metric-label">Prompt (input)</span> <span id="tok-prompt-val" class="metric-value">--</span></div>
+        <div class="metric-row"><span class="metric-label">Response (output)</span> <span id="tok-response-val" class="metric-value">--</span></div>
+        <div class="metric-row"><span class="metric-label">Thoughts</span> <span id="tok-thoughts-val" class="metric-value">--</span></div>
+        <div class="metric-row"><span class="metric-label">Total</span> <span id="tok-total-val" class="metric-value">--</span></div>
+        <hr>
+        <div class="metric-row"><span class="metric-label">Cumulative Output</span> <span id="tok-cumulative-val" class="metric-value">--</span></div>
+        <div class="metric-row"><span class="metric-label">By Modality (input)</span> <span id="tok-modality-val" class="metric-value" style="font-size: 10px;">--</span></div>
+      </div>
+    </div>
+    <!-- Debug Footer -->
+    <div id="debug-footer" class="debug-footer">
+      <button id="settings-btn" class="eval-toggle-btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg> Settings</button>
+      <div id="latency-bar" class="latency-bar">
+        <span class="latency-bar-item">TTFT <span id="ttft-val" class="metric-value">--</span> <span id="ttft-count" class="metric-count"></span></span>
+        <span class="latency-bar-item">TTFC <span id="ttfc-val" class="metric-value">--</span> <span id="ttfc-count" class="metric-count"></span></span>
+        <span class="latency-bar-item">TTLT <span id="ttlt-val" class="metric-value">--</span> <span id="ttlt-count" class="metric-count"></span></span>
+        <span class="latency-bar-item latency-bar-divider">|</span>
+        <span class="latency-bar-item" title="Context window utilization">CTX <span id="tok-ctx-pct" class="metric-value">--</span></span>
+        <span class="latency-bar-item" title="Input (prompt) tokens">IN <span id="tok-input-bar" class="metric-value">--</span></span>
+        <span class="latency-bar-item" title="Output (response) tokens">OUT <span id="tok-output-bar" class="metric-value">--</span></span>
+        <button id="latencyDetailToggle" class="debug-toggle-btn" title="Server breakdown"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></button>
+      </div>
+    </div>
+    <script src="/static/media-handler.js?v=2"></script>
+    <script src="/static/agent-client.js?v=2"></script>
+    <script src="/static/agent-ui.js?v=16"></script>
+  </body>
+</html>

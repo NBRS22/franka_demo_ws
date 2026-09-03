@@ -1,0 +1,31 @@
+# Environment/runtime directories
+.agents/
+.codex/
+.uv-cache/
+.venv/
+venv/
+env/
+node_modules/
+
+# Local config and secrets
+.config
+.env
+.env.*
+
+# Generated files
+__pycache__/
+*.py[oc]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+apps/**/captures/
+spot/apps/api/captures/
+spot/apps/navigation/waypoints_map.html
+
+# OS/editor local files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
