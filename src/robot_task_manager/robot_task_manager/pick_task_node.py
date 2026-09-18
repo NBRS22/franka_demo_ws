@@ -194,7 +194,19 @@ class PickTaskNode(Node):
         )
         try:
             frame = self._get_frames()
-            mask = self._segment(frame, request.object_label, request.point_x, request.point_y)
+            # request.point_x/point_y arrive on Gemini ER's own pointing scale
+            # (0-1000, normalized to the image's own width/height -- both the
+            # simulator and the real Gemini Robotics-ER model use this
+            # convention, cf. gemini_er_simulator.py's _to_normalized). SAM3
+            # itself expects raw pixel coordinates (it does its own point_x/W,
+            # point_y/H normalization internally, a DIFFERENT 0-1 convention,
+            # not Gemini's 0-1000 one) -- convert here, using this frame's own
+            # actual dimensions rather than a hardcoded resolution, matching
+            # this pipeline's existing "nothing hardcodes a resolution"
+            # convention (cf. CLAUDE.md racine, "Convention de coordonnées").
+            pixel_x = request.point_x / 1000.0 * frame.rgb.width
+            pixel_y = request.point_y / 1000.0 * frame.rgb.height
+            mask = self._segment(frame, request.object_label, pixel_x, pixel_y)
             pc = self._create_pointcloud(frame, mask)
             grasps = self._generate_grasps(pc.cloud, pc.scene_cloud)
 
@@ -258,7 +270,7 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == '__main__':

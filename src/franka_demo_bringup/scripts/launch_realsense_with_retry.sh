@@ -19,8 +19,43 @@ set -u
 MAX_ATTEMPTS=4
 STARTUP_GRACE_S=20
 RETRY_DELAY_S=3
+# How long to give the normal signal-forwarding shutdown chain (this script
+# -> nested `ros2 launch realsense2_camera` -> realsense2_camera_node) before
+# the watchdog below force-kills any straggler. Chosen higher than the
+# ~5s default sigterm_timeout an outer `ros2 launch` typically allows an
+# ExecuteProcess before SIGKILLing it directly -- cf. camera.md,
+# "realsense2_camera_node reste orphelin".
+REAPER_GRACE_S=8
 
 CHILD_PID=""
+
+# realsense2_camera_node consistently survives as an orphan after this
+# script's own process tree is torn down (confirmed repeatedly: an outer
+# `ros2 launch` sending SIGINT to this script cleanly stops everything else
+# it manages, but not this node). Root cause: the nested
+# `ros2 launch realsense2_camera` + its own node can take longer to shut
+# down (real USB/driver teardown, made slower still by this machine's own
+# USB flakiness, cf. camera.md) than the outer launch's patience for this
+# script to exit -- if that patience runs out first, the outer launch sends
+# SIGKILL directly to THIS script, which is uncatchable: no trap in this
+# script can react, so `kill "-$sig" "$CHILD_PID"` below never gets a chance
+# to even run, let alone finish.
+#
+# Fix: a fully detached watchdog (own session via setsid, not a process the
+# outer launch is itself tracking) that doesn't depend on this script
+# surviving long enough to clean up after itself. It watches this script's
+# own PID; once that PID is gone (however it died -- clean exit OR SIGKILL),
+# it gives the normal chain REAPER_GRACE_S more seconds in case it was just
+# slow but still working, then force-kills any realsense2_camera_node still
+# alive. Runs for the whole lifetime of this script, harmless if the normal
+# shutdown chain already finished the job (pkill on a name match with
+# nothing left to match is a silent no-op).
+setsid bash -c '
+  parent_pid='"$$"'
+  while kill -0 "$parent_pid" 2>/dev/null; do sleep 1; done
+  sleep '"$REAPER_GRACE_S"'
+  pkill -9 -f realsense2_camera_node 2>/dev/null
+' </dev/null >/dev/null 2>&1 &
 
 _forward_and_exit() {
   sig="$1"

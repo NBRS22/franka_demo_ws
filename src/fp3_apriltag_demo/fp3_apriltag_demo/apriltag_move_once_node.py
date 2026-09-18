@@ -131,7 +131,7 @@ class AprilTagMoveOnceNode(Node):
         self.get_logger().error(
             f"No detection for tag id={self.target_tag_id} within "
             f"{self.search_timeout_sec:.1f}s, giving up")
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
     def _detections_cb(self, msg):
         if self._done:
@@ -157,7 +157,7 @@ class AprilTagMoveOnceNode(Node):
     def _process(self, detection, header):
         pose_camera = self._estimate_pose(detection, header)
         if pose_camera is None:
-            rclpy.shutdown()
+            rclpy.try_shutdown()
             return
 
         try:
@@ -269,7 +269,7 @@ class AprilTagMoveOnceNode(Node):
         goal_handle = future.result()
         if not goal_handle.accepted:
             self.get_logger().error('mtc_pick goal rejected by command_router_node')
-            rclpy.shutdown()
+            rclpy.try_shutdown()
             return
 
         self.get_logger().info('Goal accepted, executing...')
@@ -289,7 +289,7 @@ class AprilTagMoveOnceNode(Node):
                 f'pose -- {result.message}. Either the calibration is off, or the '
                 f'candidate pose was filtered/unreachable for an unrelated reason '
                 f'(check the message above and pick_place_node\'s own logs).')
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 def main(args=None):

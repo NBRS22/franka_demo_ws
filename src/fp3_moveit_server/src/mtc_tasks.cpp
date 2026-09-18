@@ -20,6 +20,20 @@ namespace
 // q_marker = q_grasp (x) R, R = (w=cos(-45deg), x=0, y=sin(-45deg), z=0).
 constexpr double kSqrt2Over2 = 0.70710678118654752440;
 constexpr double kArrowLength = 0.08;  // meters, matches visualize_grasps_node.py
+
+// fp3_hand_tcp physical-offset correction -- deliberately NOT in the URDF
+// (user request: software/TF-only fix). Mounting the D405 eye-in-hand
+// camera added a bracket between the flange and the hand, so the real
+// physical TCP now sits ~5mm lower along the gripper's own approach axis
+// (local +Z, cf. approachAxisWorld) than franka_description's
+// fp3_hand_tcp frame assumes -- i.e. the true TCP = the URDF frame's
+// origin retracted 5mm along local Z. To make the *real* TCP land on the
+// intended grasp point, the IK target (which positions the URDF frame) is
+// pushed 5mm further along local +Z before planning. Applies to every
+// grasp candidate uniformly, right where the pose becomes an MTC IK
+// target -- update this constant (or remove it) if the camera mount
+// changes again.
+constexpr double kHandTcpZOffsetM = 0.005;
 }  // namespace
 
 geometry_msgs::msg::Quaternion approachToArrowOrientation(const geometry_msgs::msg::Quaternion & q)
@@ -74,6 +88,18 @@ bool planAndExecuteApproach(
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub,
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr marker_pub)
 {
+  // Apply the fp3_hand_tcp physical-offset correction (cf. kHandTcpZOffsetM)
+  // before this pose is used for anything downstream -- IK target,
+  // published pose, and marker all reflect the corrected pose, so they stay
+  // consistent with what's actually commanded.
+  geometry_msgs::msg::PoseStamped corrected_pose = pose;
+  {
+    const auto axis = approachAxisWorld(pose.pose.orientation);
+    corrected_pose.pose.position.x += kHandTcpZOffsetM * axis[0];
+    corrected_pose.pose.position.y += kHandTcpZOffsetM * axis[1];
+    corrected_pose.pose.position.z += kHandTcpZOffsetM * axis[2];
+  }
+
   mtc::Task task;
   task.setName("mtc_pick approach");
   task.loadRobotModel(node);
@@ -111,7 +137,7 @@ bool planAndExecuteApproach(
 
   auto pose_generator =
     std::make_unique<mtc::stages::FixedCartesianPoses>("grasp pose");
-  pose_generator->addPose(pose);
+  pose_generator->addPose(corrected_pose);
   pose_generator->setMonitoredStage(current_state_ptr);
 
   auto ik = std::make_unique<mtc::stages::ComputeIK>(
@@ -141,10 +167,10 @@ bool planAndExecuteApproach(
   // executed. Publish before execute() so a listener sees it ahead of the
   // actual motion, not after the fact.
   if (pose_pub) {
-    pose_pub->publish(pose);
+    pose_pub->publish(corrected_pose);
   }
   if (marker_pub) {
-    marker_pub->publish(approachArrowMarker(pose));
+    marker_pub->publish(approachArrowMarker(corrected_pose));
   }
 
   return task.execute(*task.solutions().front()) ==
