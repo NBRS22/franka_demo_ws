@@ -21,19 +21,12 @@ namespace
 constexpr double kSqrt2Over2 = 0.70710678118654752440;
 constexpr double kArrowLength = 0.08;  // meters, matches visualize_grasps_node.py
 
-// fp3_hand_tcp physical-offset correction -- deliberately NOT in the URDF
-// (user request: software/TF-only fix). Mounting the D405 eye-in-hand
-// camera added a bracket between the flange and the hand, so the real
-// physical TCP now sits ~5mm lower along the gripper's own approach axis
-// (local +Z, cf. approachAxisWorld) than franka_description's
-// fp3_hand_tcp frame assumes -- i.e. the true TCP = the URDF frame's
-// origin retracted 5mm along local Z. To make the *real* TCP land on the
-// intended grasp point, the IK target (which positions the URDF frame) is
-// pushed 5mm further along local +Z before planning. Applies to every
-// grasp candidate uniformly, right where the pose becomes an MTC IK
-// target -- update this constant (or remove it) if the camera mount
-// changes again.
-constexpr double kHandTcpZOffsetM = 0.005;
+// Software-only correction (URDF untouched) added to every IK target along
+// its local +Z (approach axis, points down for a top-down grasp), for the
+// D405 mount that shifts the real TCP ~5mm from fp3_hand_tcp. Currently 0.0
+// (disabled): the sign is unverified -- if the real fingertips sit 5mm
+// further along +Z than the URDF says, the correct value is -0.005.
+constexpr double kHandTcpZOffsetM = 0.0;
 }  // namespace
 
 geometry_msgs::msg::Quaternion approachToArrowOrientation(const geometry_msgs::msg::Quaternion & q)
