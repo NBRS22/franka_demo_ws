@@ -670,10 +670,10 @@ ros2 action send_goal /move_to_pose franka_demo_interfaces/action/MoveToPose "..
 ros2 action send_goal /pick_object franka_demo_interfaces/action/PickObject "..."
 ```
 
-Or use one of the two AprilTag client packages, which each bring this
-package up themselves and don't need a manually-constructed goal:
-
-```
-ros2 launch fp3_apriltag_demo apriltag_move_once.launch.py use_fake_hardware:=true
-ros2 launch fp3_apriltag_mtc_demo apriltag_pick_once.launch.py use_fake_hardware:=true
-```
+`fp3_apriltag_demo` and `fp3_apriltag_mtc_demo`, the two AprilTag client
+packages mentioned earlier in this file's development history, no longer
+live in this workspace -- `fp3_apriltag_demo` moved to `calib_ws` (where it
+was rewritten to move `fp3_hand_tcp` directly via `/move_action`, no
+`mtc_pick`/grasp involved anymore, cf. its own CLAUDE.md there);
+`fp3_apriltag_mtc_demo` was never actually committed here despite being
+referenced.

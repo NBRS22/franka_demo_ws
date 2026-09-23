@@ -116,7 +116,8 @@ confirme :
 Récurrent avec tous les launch files de ce projet qui démarrent RealSense via
 `launch_realsense_with_retry.sh` (`ExecuteProcess` → `ros2 launch realsense2_camera rs_launch.py`
 → `realsense2_camera_node`) : un `Ctrl-C`/SIGINT sur le launch principal (`calib_bringup`,
-`evaluate_calibration`, `fp3_apriltag_demo`, `franka_demo_bringup`, etc.) arrête proprement tout le
+`evaluate_calibration`, `franka_demo_bringup`, etc. -- `fp3_apriltag_demo` a depuis été déplacé vers
+`calib_ws`, où le même souci s'applique) arrête proprement tout le
 reste, mais `realsense2_camera_node` lui-même survit comme process orphelin (le signal ne traverse
 pas correctement la chaîne bash → `ros2 launch` imbriqué → node). Un simple SIGTERM ne suffit pas
 non plus, il faut `-9`. Reproduit systématiquement pendant tout ce chantier (D455 et D405).
