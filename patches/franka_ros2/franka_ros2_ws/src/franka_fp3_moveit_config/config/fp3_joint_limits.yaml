@@ -1,0 +1,30 @@
+joint_limits:
+  fp3_joint1:
+    has_acceleration_limits: true
+    max_acceleration: 3.75
+  fp3_joint2:
+    has_acceleration_limits: true
+    max_acceleration: 1.875
+  fp3_joint3:
+    has_acceleration_limits: true
+    max_acceleration: 2.5
+  fp3_joint4:
+    has_acceleration_limits: true
+    max_acceleration: 3.125
+  fp3_joint5:
+    has_acceleration_limits: true
+    max_acceleration: 3.75
+  fp3_joint6:
+    has_acceleration_limits: true
+    max_acceleration: 5.0
+  fp3_joint7:
+    has_acceleration_limits: true
+    max_acceleration: 5.0
+  fp3_finger_joint1:
+    has_acceleration_limits: true
+    max_acceleration: 1.0
+  fp3_finger_joint2:
+    has_acceleration_limits: true
+    max_acceleration: 1.0
+
+

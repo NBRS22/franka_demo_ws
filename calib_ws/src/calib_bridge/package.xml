@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>calib_bridge</name>
+  <version>0.1.0</version>
+  <description>
+    Derives the D455 eye-on-base calibration from the already-trusted D405
+    eye-in-hand calibration (calib_eye_in_hand) instead of running
+    easy_handeye2's own AX=XB solver on the D455: both cameras observe the
+    same static tag at once, the D405 + live FK gives an independent
+    fp3_link0-frame estimate of the tag, and inverting the D455's own
+    simultaneous detection of that tag gives fp3_link0 -> D455 directly.
+    Averages several such samples (take_sample/save_calibration services)
+    and writes a standard easy_handeye2 .calib file.
+  </description>
+  <maintainer email="n.elbachari@gmail.com">nour el bachari</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>tf2_ros</depend>
+  <depend>sensor_msgs</depend>
+  <depend>apriltag_msgs</depend>
+  <depend>std_srvs</depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+  <exec_depend>easy_handeye2</exec_depend>
+  <exec_depend>easy_handeye2_msgs</exec_depend>
+  <exec_depend>apriltag_ros</exec_depend>
+  <exec_depend>fp3_moveit_server</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

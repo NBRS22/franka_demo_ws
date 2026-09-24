@@ -1,0 +1,244 @@
+import os
+
+from launch import LaunchDescription
+from launch.actions import (
+    DeclareLaunchArgument,
+    EmitEvent,
+    ExecuteProcess,
+    IncludeLaunchDescription,
+    RegisterEventHandler,
+)
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+from ament_index_python.packages import get_package_share_directory
+
+# External perception servers (separate conda envs, not part of this colcon workspace).
+# cf. CLAUDE.md racine — "Serveurs externes" et "Ports ZMQ".
+def _find_fp3_root():
+    # Repo root = the directory holding SAM3/ and GraspGen/ next to the
+    # workspaces. Override with $FP3_ROOT; otherwise walk up from this file
+    # (works from src/ with --symlink-install and from install/ alike).
+    env = os.environ.get('FP3_ROOT')
+    if env:
+        return os.path.abspath(os.path.expanduser(env))
+    path = os.path.dirname(os.path.realpath(__file__))
+    while path != os.path.dirname(path):
+        if os.path.isdir(os.path.join(path, 'SAM3')) and os.path.isdir(os.path.join(path, 'GraspGen')):
+            return path
+        path = os.path.dirname(path)
+    raise RuntimeError(
+        'Cannot locate the FP3 repo root (a directory containing SAM3/ and GraspGen/). '
+        'Set the FP3_ROOT environment variable.')
+
+
+FP3_ROOT = _find_fp3_root()
+
+SAM3_DIR = os.path.join(FP3_ROOT, 'SAM3')
+SAM3_CONDA_ENV = 'SAM3'
+SAM3_HOST = '127.0.0.1'
+SAM3_PORT = 5557
+
+GRASPGEN_DIR = os.path.join(FP3_ROOT, 'GraspGen')
+GRASPGEN_CONDA_ENV = 'GraspGen'
+GRASPGEN_HOST = '127.0.0.1'
+GRASPGEN_PORT = 5558
+
+HEALTH_CHECK_TIMEOUT_S = '180'
+
+# RealSense D455 stream profile ('WIDTHxHEIGHTxFPS') — color and depth kept identical
+# so aligned_depth_to_color stays pixel-indexed the same as the color mask (cf.
+# CLAUDE.md racine, "Convention de coordonnées" / create_pointcloud_node). Nothing
+# downstream (create_pointcloud_node, sam3_bridge_node, ...) hardcodes a resolution —
+# they all read height/width from the message/response itself — so changing this is
+# the only place that needs touching to lower the resolution.
+REALSENSE_COLOR_PROFILE = '1280x720x30'
+REALSENSE_DEPTH_PROFILE = '1280x720x30'
+
+
+def _conda_run_cmd(env_name, workdir, *command):
+    inner = ' '.join(['conda', 'run', '-n', env_name, '--no-capture-output', *command])
+    return ['bash', '-c', f'cd {workdir} && exec {inner}']
+
+
+def generate_launch_description():
+    bringup_share = get_package_share_directory('franka_demo_bringup')
+    wait_script = os.path.join(bringup_share, 'scripts', 'wait_for_zmq_health.py')
+
+    sam3_server = ExecuteProcess(
+        cmd=_conda_run_cmd(SAM3_CONDA_ENV, SAM3_DIR, 'python', '-m', 'sam3_server'),
+        name='sam3_server',
+        output='screen',
+    )
+
+    graspgen_server = ExecuteProcess(
+        cmd=_conda_run_cmd(GRASPGEN_CONDA_ENV, GRASPGEN_DIR, 'python', 'client-server/graspgen_server.py'),
+        name='graspgen_server',
+        output='screen',
+    )
+
+    def _wait_for(name, host, port):
+        return ExecuteProcess(
+            cmd=[
+                'python3', wait_script,
+                '--name', name,
+                '--host', host,
+                '--port', str(port),
+                '--timeout', HEALTH_CHECK_TIMEOUT_S,
+            ],
+            name=f'wait_for_{name.lower()}',
+            output='screen',
+        )
+
+    wait_sam3 = _wait_for('SAM3', SAM3_HOST, SAM3_PORT)
+    wait_graspgen = _wait_for('GraspGen', GRASPGEN_HOST, GRASPGEN_PORT)
+
+    # Robot bringup: move_group, motion_server_node, pick_place_node,
+    # command_router_node, scene_setup_node. Started immediately — no dependency
+    # on the perception servers (SAM3/GraspGen). Exposes /mtc_pick publicly
+    # (via command_router_node) which pick_task_node calls once grasps are ready.
+    robot_bringup = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(
+                get_package_share_directory('fp3_moveit_server'),
+                'launch',
+                'bringup.launch.py',
+            )
+        ),
+        launch_arguments={
+            'robot_ip': LaunchConfiguration('robot_ip'),
+            'use_fake_hardware': LaunchConfiguration('use_fake_hardware'),
+            'use_rviz': LaunchConfiguration('use_rviz'),
+        }.items(),
+    )
+
+    # Runs `ros2 launch realsense2_camera rs_launch.py ...` as its own OS
+    # process (via launch_realsense_with_retry.sh) rather than an
+    # IncludeLaunchDescription in this same launch context. Two reasons:
+    # 1. initial_reset:=true triggers a real USB disconnect/re-enumerate of
+    #    the D455 (confirmed the only thing that reliably fixes "Depth
+    #    stream start failure" -- plain `usbreset` doesn't, cf.
+    #    CLAUDE.md "Dépannage"), and the ROS wrapper node sometimes tries
+    #    to reopen the device before that finishes, crashing within a few
+    #    seconds ("Device or resource busy" -> "No such device"). The
+    #    wrapper script retries automatically when that happens.
+    # 2. Being a separate process gives it its own LaunchConfiguration
+    #    namespace for free, same isolation the old GroupAction(scoped=True,
+    #    forwarding=False) existed for -- no longer needed.
+    realsense = ExecuteProcess(
+        cmd=[
+            os.path.join(bringup_share, 'scripts', 'launch_realsense_with_retry.sh'),
+            'align_depth.enable:=true',
+            'initial_reset:=true',
+            'log_level:=warn',
+            f'rgb_camera.color_profile:={REALSENSE_COLOR_PROFILE}',
+            f'depth_module.depth_profile:={REALSENSE_DEPTH_PROFILE}',
+        ],
+        name='realsense',
+        output='screen',
+    )
+
+    # Reads calibration from ~/.ros2/easy_handeye2/calibrations/<calibration_name>.calib
+    # and publishes the static TF fp3_link0 → camera_link once the RealSense
+    # TF tree (camera_link → camera_color_optical_frame) is available.
+    # Started with RealSense: it has retry logic (publish_rate_s) and waits
+    # internally until both the calibration and the RealSense TF are ready.
+    handeye_tf_publisher = Node(
+        package='handeye_tf_publisher',
+        executable='handeye_tf_publisher',
+        name='handeye_tf_publisher',
+        output='screen',
+        parameters=[{
+            'calibration_name': 'fp3_link0_d455_camera_color_optical_frame_001',
+            'calib_dir': '~/.ros2/easy_handeye2/calibrations',
+            'publish_rate_s': 2.0,
+            'camera_link_frame': 'camera_link',
+        }],
+    )
+
+    robot_task_manager = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(
+                get_package_share_directory('robot_task_manager'),
+                'launch',
+                'robot_task_manager.launch.py',
+            )
+        ),
+        launch_arguments={
+            'execute_pick': LaunchConfiguration('execute_pick'),
+        }.items(),
+    )
+
+    def _on_wait_exit(next_actions, failure_reason):
+        def _handler(event, context):
+            if event.returncode == 0:
+                return next_actions
+            return [EmitEvent(event=Shutdown(reason=failure_reason))]
+        return _handler
+
+    return LaunchDescription([
+
+        DeclareLaunchArgument(
+            'robot_ip',
+            default_value='192.168.1.1',
+            description='FP3 controller IP (ignored if use_fake_hardware:=true)',
+        ),
+        DeclareLaunchArgument(
+            'use_fake_hardware',
+            default_value='false',
+            description='Use simulated hardware. Default false (real robot).',
+        ),
+        DeclareLaunchArgument(
+            'use_rviz',
+            default_value='false',
+            description='Launch RViz with the MoveIt config.',
+        ),
+        DeclareLaunchArgument(
+            'execute_pick',
+            default_value='false',
+            description=(
+                'If true, pick_task_node sends the goal to mtc_pick after '
+                'grasp generation. If false (default), the pipeline stops '
+                'after grasp generation/visualization -- no motion. '
+                'Forwarded to robot_task_manager.launch.py.'
+            ),
+        ),
+
+        # Robot control stack: starts immediately, independent of perception servers.
+        robot_bringup,
+
+        sam3_server,
+        graspgen_server,
+        wait_sam3,
+
+        # If either external server dies at any point (startup crash or later), tear
+        # down the whole launch — RealSense, bridges, robot_task_manager included.
+        RegisterEventHandler(OnProcessExit(
+            target_action=sam3_server,
+            on_exit=[EmitEvent(event=Shutdown(reason='SAM3 server exited'))],
+        )),
+        RegisterEventHandler(OnProcessExit(
+            target_action=graspgen_server,
+            on_exit=[EmitEvent(event=Shutdown(reason='GraspGen server exited'))],
+        )),
+
+        # Sequential health-check gate: only start RealSense + robot_task_manager
+        # once both external servers have answered {'status': 'ok'} on their ZMQ
+        # health port. wait_graspgen is only started after wait_sam3 succeeds — the
+        # two servers still boot in parallel (started above), so this just serializes
+        # the *checks*, not the actual server startup.
+        RegisterEventHandler(OnProcessExit(
+            target_action=wait_sam3,
+            on_exit=_on_wait_exit([wait_graspgen], 'SAM3 server failed health check'),
+        )),
+        RegisterEventHandler(OnProcessExit(
+            target_action=wait_graspgen,
+            on_exit=_on_wait_exit(
+                [realsense, handeye_tf_publisher, robot_task_manager],
+                'GraspGen server failed health check',
+            ),
+        )),
+
+    ])

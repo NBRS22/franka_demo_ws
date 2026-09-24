@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>calib_eye_in_hand</name>
+  <version>0.1.0</version>
+  <description>
+    Eye-in-hand calibration of the wrist-mounted D405, and (follow-up work)
+    cross-validation against the existing eye-on-base D455 calibration by
+    comparing both cameras' view of the same static tag -- cf. CLAUDE.md.
+  </description>
+  <maintainer email="n.elbachari@gmail.com">nour el bachari</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>realsense2_camera</exec_depend>
+  <exec_depend>apriltag_ros</exec_depend>
+  <exec_depend>easy_handeye2</exec_depend>
+  <exec_depend>handeye_tf_publisher</exec_depend>
+  <exec_depend>fp3_moveit_server</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

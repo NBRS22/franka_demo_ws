@@ -1,0 +1,19 @@
+# Artefacts de build colcon — régénérés par `colcon build`, ne doivent pas être versionnés
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Éditeurs / OS
+.vscode/
+*.swp
+.DS_Store
+
+# Dépendances externes clonées manuellement (cf. handeye_tf_publisher/README.md)
+# — pas vendorées dans ce repo, à cloner soi-même.
+src/apriltag_ros/
+src/easy_handeye2/

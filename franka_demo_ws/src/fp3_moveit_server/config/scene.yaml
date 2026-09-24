@@ -1,0 +1,12 @@
+/**:
+  ros__parameters:
+
+    table.frame_id: "fp3_link0"
+    table.position: [-0.15, 0.45, -0.435]
+    table.dimensions: [0.75, 1.40, 0.90]
+    table.allowed_touch_links: ["fp3_link0"]
+
+    wall.frame_id: "fp3_link0"
+    wall.position: [-0.475, 0.45, 0.75]
+    wall.dimensions: [0.1, 1.40, 1.50]
+

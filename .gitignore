@@ -1,0 +1,19 @@
+# colcon build artifacts
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# Editors / OS
+.vscode/
+*.swp
+.DS_Store
+.claude/
+
+# Large / generated (not versioned)
+GraspGen/GraspGenModels/

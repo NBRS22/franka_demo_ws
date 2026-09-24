@@ -1,0 +1,798 @@
+diff --git a/README.md b/README.md
+index ccb0dac..7e51e25 100644
+--- a/README.md
++++ b/README.md
+@@ -307,7 +307,7 @@ GraspGen can be deployed as a standalone ZMQ server, making it callable as a too
+ bash docker/run_server.sh $(pwd) --models /path/to/GraspGenModels
+ 
+ # Call it from a client (Python — no CUDA required):
+-python client-server/graspgen_client.py --mesh_file /path/to/mesh.obj --host localhost --port 5556
++python client-server/graspgen_client.py --mesh_file /path/to/mesh.obj --host localhost --port 5558
+ ```
+ 
+ ## Omniverse and USD Support
+diff --git a/client-server/README.md b/client-server/README.md
+index c4aaaaf..2937b41 100644
+--- a/client-server/README.md
++++ b/client-server/README.md
+@@ -20,7 +20,7 @@ Terminal window 1 — **start the server**:
+ # Build the base Docker image (one-time):
+ bash docker/build.sh
+ 
+-# Start the server (default: Robotiq 2F-140 on port 5556):
++# Start the server (default: Robotiq 2F-140 on port 5558):
+ MODELS_DIR=/path/to/GraspGenModels docker compose -f docker/compose.serve.yml up --build
+ 
+ # Or with a custom gripper and port:
+@@ -47,12 +47,12 @@ uv pip install -e . --no-deps
+ python client-server/graspgen_client.py \
+     --mesh_file /path/to/GraspGenModels/sample_data/meshes/box.obj \
+     --mesh_scale 1.0 \
+-    --host localhost --port 5556
++    --host localhost --port 5558
+ 
+ # Or with a point cloud file (.pcd / .ply / .xyz / .npy):
+ python client-server/graspgen_client.py \
+     --pcd_file assets/objects/example_object.pcd \
+-    --host localhost --port 5556
++    --host localhost --port 5558
+ ```
+ 
+ ## Without Docker
+@@ -69,7 +69,7 @@ pip install pyzmq msgpack msgpack-numpy
+ # Start the server:
+ python client-server/graspgen_server.py \
+     --gripper_config /path/to/GraspGenModels/checkpoints/graspgen_robotiq_2f_140.yml \
+-    --port 5556
++    --port 5558
+ ```
+ 
+ Terminal window 2 — **run the client**:
+@@ -85,12 +85,12 @@ uv pip install -e . --no-deps
+ python client-server/graspgen_client.py \
+     --mesh_file /path/to/GraspGenModels/sample_data/meshes/box.obj \
+     --mesh_scale 1.0 \
+-    --host localhost --port 5556
++    --host localhost --port 5558
+ 
+ # Or with a point cloud file:
+ python client-server/graspgen_client.py \
+     --pcd_file assets/objects/example_object.pcd \
+-    --host localhost --port 5556
++    --host localhost --port 5558
+ ```
+ 
+ ## Python Client API
+@@ -100,7 +100,7 @@ The client only requires `pyzmq`, `msgpack`, `msgpack-numpy`, and `numpy` — no
+ ```python
+ from grasp_gen.serving.zmq_client import GraspGenClient
+ 
+-client = GraspGenClient(host="localhost", port=5556)
++client = GraspGenClient(host="localhost", port=5558)
+ 
+ # Get server info
+ print(client.server_metadata)
+@@ -126,6 +126,40 @@ The server uses **msgpack** serialization over a **ZMQ REP** socket.
+ |---------|--------|----------|
+ | `{"action": "health"}` | — | `{"status": "ok"}` |
+ | `{"action": "metadata"}` | — | `{"gripper_name": ..., "model_name": ..., ...}` |
+-| `{"action": "infer", "point_cloud": ndarray, ...}` | `grasp_threshold`, `num_grasps`, `topk_num_grasps`, `min_grasps`, `max_tries`, `remove_outliers` | `{"grasps": ndarray, "confidences": ndarray, "num_grasps": int, "timing": {...}}` |
++| `{"action": "infer", "point_cloud": ndarray, ...}` | `planner`, `grasp_threshold`, `num_grasps`, `topk_num_grasps`, `min_grasps`, `max_tries`, `remove_outliers`, `scene_point_cloud` (optional), `moe_*` (optional, `planner="graspmoe"` only) | `{"grasps": ndarray, "confidences": ndarray, "num_grasps": int, "timing": {...}, "planner": str, "branch_tags": [...] (planner="graspmoe" only)}` |
+ 
+ This makes it straightforward to write clients in any language with ZMQ and msgpack bindings (C++, Rust, etc.).
++
++### `graspmoe` planner — guaranteed top-down candidates
++
++The default planner (`planner="diffusion"`, unchanged) is the raw diffusion sampler: it has no notion of "up" or gravity, it only sees the object point cloud centered on itself, so for a given object shape it may generate mostly (or only) lateral/side grasps — there's no bias toward the top-down approach that's often preferable for small objects sitting on a surface.
++
++`planner="graspmoe"` unions those diffusion grasps with a second, **deterministic** branch: candidates swept over the object's own oriented bounding box (OBB), including a world-aligned top-down grasp by construction (`moe_obb_density="dense-topandside"`, the default, also sweeps all 4 side faces). Both branches are scored by the same discriminator, so ranking/top-k treats them uniformly. This is the same planner already used by `scripts/demo_scene_pc.py --planner graspmoe` (`grasp_gen/samplers/graspmoe.py`), now available over ZMQ.
++
++```python
++grasps, confidences = client.infer(
++    object_point_cloud,
++    planner="graspmoe",
++    topk_num_grasps=50,          # applied to the union of both branches
++    moe_obb_density="dense-topandside",  # top face + all 4 sides (default)
++    moe_num_yaws=36,             # yaw samples per OBB face
++    moe_z_offsets_cm=(-8, -6, -4, -2, 0),  # standoff sweep per face
++)
++```
++
++Fully opt-in: omit `planner` (or pass `"diffusion"`) and behavior is unchanged. When `planner="graspmoe"`, the response gains `branch_tags` (a `"diff"`/`"obb"` string per returned grasp, same order/length as `grasps`/`confidences` — sliced consistently if `scene_point_cloud` collision filtering also ran) and `skipped_obb` (`true` if the OBB branch was skipped — e.g. `moe_skip_obb_rule="auto"`, the default, skips it when every OBB extent exceeds the gripper's jaw width, i.e. the object is too big to enclose). Requires a parallel-jaw gripper config with a `width` field (Franka Panda, Robotiq 2F-140); raises a clear `error` in the response for grippers without one (e.g. suction cups) — use `planner="diffusion"` for those.
++
++### Collision filtering against a scene point cloud
++
++Pass an optional `scene_point_cloud` (ndarray `(S, 3)`) alongside `point_cloud` in an `infer` request to filter out any returned grasp whose gripper mesh would collide with the surroundings (table, other objects, ...). The target object's own points should already be excluded from `scene_point_cloud` by the caller — this is the same collision check used by `scripts/demo_scene_pc.py --filter_collisions` (`filter_colliding_grasps_fast`), now available over ZMQ.
++
++```python
++grasps, confidences = client.infer(
++    object_point_cloud,               # (N, 3) — the object only
++    scene_point_cloud=scene_pc,       # (S, 3) — everything else, object excluded
++    collision_threshold=0.02,         # meters
++    max_scene_points=8192,            # server-side random-downsample cap
++)
++```
++
++Opt-in and fully backward compatible: omit `scene_point_cloud` (or pass `None`) and the server behaves exactly as before, no collision filtering. The server pre-samples the loaded gripper's own collision mesh once at startup (from its `gripper_config`), so this adds no per-request mesh-sampling cost. When collision filtering ran, the response also includes `num_grasps_before_collision_filter` and `timing.collision_filter_ms`.
+diff --git a/client-server/graspgen_client.py b/client-server/graspgen_client.py
+index 9a366b5..b507111 100755
+--- a/client-server/graspgen_client.py
++++ b/client-server/graspgen_client.py
+@@ -14,17 +14,17 @@ Usage:
+     # From a mesh file:
+     python client-server/graspgen_client.py \
+         --mesh_file /path/to/box.obj --mesh_scale 1.0 \
+-        --host localhost --port 5556
++        --host localhost --port 5558
+ 
+     # From a PCD file:
+     python client-server/graspgen_client.py \
+         --pcd_file assets/objects/example_object.pcd \
+-        --host localhost --port 5556
++        --host localhost --port 5558
+ 
+     # With visualization:
+     python client-server/graspgen_client.py \
+         --mesh_file /path/to/box.obj --mesh_scale 1.0 \
+-        --host localhost --port 5556 --visualize
++        --host localhost --port 5558 --visualize
+ """
+ 
+ import argparse
+@@ -77,8 +77,17 @@ def parse_args():
+         default=100,
+         help="Return only top-k grasps",
+     )
++    parser.add_argument(
++        "--planner",
++        type=str,
++        default="diffusion",
++        choices=["diffusion", "graspmoe"],
++        help="'diffusion' (raw sampler) or 'graspmoe' (unions in deterministic "
++        "OBB-swept candidates -- top face + sides by default -- so top-down "
++        "grasps are reliably included; see grasp_gen/samplers/graspmoe.py)",
++    )
+     parser.add_argument("--host", type=str, default="localhost", help="Server host")
+-    parser.add_argument("--port", type=int, default=5556, help="Server port")
++    parser.add_argument("--port", type=int, default=5558, help="Server port")
+     parser.add_argument(
+         "--visualize",
+         action="store_true",
+@@ -170,6 +179,7 @@ def main():
+         t0 = time.monotonic()
+         grasps, confidences = client.infer(
+             point_cloud,
++            planner=args.planner,
+             num_grasps=args.num_grasps,
+             grasp_threshold=args.grasp_threshold,
+             topk_num_grasps=args.topk_num_grasps,
+diff --git a/client-server/graspgen_server.py b/client-server/graspgen_server.py
+index d48faad..8f1554d 100755
+--- a/client-server/graspgen_server.py
++++ b/client-server/graspgen_server.py
+@@ -32,8 +32,8 @@ def parse_args():
+     parser.add_argument(
+         "--gripper_config",
+         type=str,
+-        required=True,
+-        help="Path to gripper configuration YAML file (e.g. checkpoints/graspgen_franka_panda.yml)",
++        default="GraspGenModels/checkpoints/graspgen_franka_panda.yml",
++        help="Path to gripper configuration YAML file (e.g. checkpoints/graspgen_franka_panda.yml) (default: GraspGenModels/checkpoints/graspgen_franka_panda.yml)",
+     )
+     parser.add_argument(
+         "--host",
+@@ -44,8 +44,8 @@ def parse_args():
+     parser.add_argument(
+         "--port",
+         type=int,
+-        default=5556,
+-        help="Port to bind the ZMQ socket (default: 5556)",
++        default=5558,
++        help="Port to bind the ZMQ socket (default: 5558)",
+     )
+     return parser.parse_args()
+ 
+diff --git a/docker/compose.serve.yml b/docker/compose.serve.yml
+index a1b03b1..173887f 100644
+--- a/docker/compose.serve.yml
++++ b/docker/compose.serve.yml
+@@ -6,7 +6,7 @@
+ #   # 1. Build the base image (one time):
+ #   bash docker/build.sh
+ #
+-#   # 2. Start the server (default: Robotiq 2F-140 on port 5556):
++#   # 2. Start the server (default: Robotiq 2F-140 on port 5558):
+ #   MODELS_DIR=/path/to/GraspGenModels docker compose -f docker/compose.serve.yml up --build
+ #
+ #   # 3. Custom gripper config:
+@@ -33,7 +33,7 @@ services:
+       - NVIDIA_DRIVER_CAPABILITIES=all
+       - SERVER_ARGS
+     command: >
+-      ${SERVER_ARGS:---gripper_config /models/checkpoints/graspgen_robotiq_2f_140.yml --port 5556}
++      ${SERVER_ARGS:---gripper_config /models/checkpoints/graspgen_robotiq_2f_140.yml --port 5558}
+     deploy:
+       resources:
+         reservations:
+diff --git a/docker/run_server.sh b/docker/run_server.sh
+index fcac6f3..79d0290 100755
+--- a/docker/run_server.sh
++++ b/docker/run_server.sh
+@@ -6,7 +6,7 @@
+ #   bash docker/run_server.sh <graspgen_code_dir> --models <models_dir> [--gripper_config CONFIG] [--port PORT]
+ #
+ # Examples:
+-#   # Default (Robotiq 2F-140 on port 5556):
++#   # Default (Robotiq 2F-140 on port 5558):
+ #   bash docker/run_server.sh $(pwd) --models /path/to/GraspGenModels
+ #
+ #   # Franka Panda on port 5557:
+@@ -22,7 +22,7 @@ show_usage() {
+     echo "  graspgen_code_dir        Path to the GraspGen code repository"
+     echo "  --models <dir>           Path to GraspGenModels directory"
+     echo "  --gripper_config <path>  Gripper config inside the container (default: /models/checkpoints/graspgen_robotiq_2f_140.yml)"
+-    echo "  --port <port>            ZMQ port (default: 5556)"
++    echo "  --port <port>            ZMQ port (default: 5558)"
+     exit 1
+ }
+ 
+@@ -38,7 +38,7 @@ shift
+ 
+ MODELS_DIR=""
+ GRIPPER_CONFIG="/models/checkpoints/graspgen_robotiq_2f_140.yml"
+-PORT=5556
++PORT=5558
+ 
+ while [[ $# -gt 0 ]]; do
+     case $1 in
+diff --git a/grasp_gen/serving/zmq_client.py b/grasp_gen/serving/zmq_client.py
+index 39bacb1..f82ab51 100644
+--- a/grasp_gen/serving/zmq_client.py
++++ b/grasp_gen/serving/zmq_client.py
+@@ -14,7 +14,7 @@ This makes it suitable for running on robot controllers or edge devices.
+ Usage:
+     from grasp_gen.serving.zmq_client import GraspGenClient
+ 
+-    client = GraspGenClient("localhost", 5556)
++    client = GraspGenClient("localhost", 5558)
+     grasps, confidences = client.infer(point_cloud)
+ """
+ 
+@@ -38,7 +38,7 @@ class GraspGenClient:
+     def __init__(
+         self,
+         host: str = "localhost",
+-        port: int = 5556,
++        port: int = 5558,
+         timeout_ms: int = 60_000,
+         wait_for_server: bool = True,
+         retry_interval_s: float = 2.0,
+@@ -108,23 +108,70 @@ class GraspGenClient:
+         self,
+         point_cloud: np.ndarray,
+         *,
++        planner: str = "diffusion",
+         grasp_threshold: float = -1.0,
+         num_grasps: int = 200,
+         topk_num_grasps: int = -1,
+         min_grasps: int = 40,
+         max_tries: int = 6,
+         remove_outliers: bool = True,
++        scene_point_cloud: Optional[np.ndarray] = None,
++        collision_threshold: float = 0.02,
++        max_scene_points: int = 8192,
++        moe_num_yaws: int = 36,
++        moe_z_offsets_cm: tuple = (-8, -6, -4, -2, 0),
++        moe_outlier_threshold: float = 0.014,
++        moe_outlier_k: int = 20,
++        moe_obb_mode: str = "advanced",
++        moe_skip_obb_rule: str = "auto",
++        moe_obb_density: str = "dense-topandside",
++        moe_obb_position_spacing_cm: float = 1.0,
+     ) -> tuple[np.ndarray, np.ndarray]:
+         """Send a point cloud to the server and receive grasp predictions.
+ 
+         Args:
+             point_cloud: (N, 3) float32 array of object points.
++            planner: "diffusion" (raw sampler, default) or "graspmoe" (diffusion
++                grasps unioned with deterministic OBB-swept candidates -- top
++                face + sides by default -- both scored by the discriminator;
++                see grasp_gen/samplers/graspmoe.py). Unlike the diffusion
++                sampler, graspmoe is aware of "up" (it sweeps the object's own
++                oriented bounding box), so it reliably includes top-down
++                candidates even when the diffusion model alone favors lateral
++                grasps for a given object shape.
+             grasp_threshold: Min confidence to keep. -1.0 returns top-k instead.
+             num_grasps: Number of grasps the diffusion model should sample.
+             topk_num_grasps: Return only top-k grasps (-1 = use threshold).
+-            min_grasps: Minimum grasps before retrying.
+-            max_tries: Max inference retries on the server.
+-            remove_outliers: Whether to filter point cloud outliers.
++                For planner="graspmoe" this caps the union of both branches.
++            min_grasps: Minimum grasps before retrying (planner="diffusion" only).
++            max_tries: Max inference retries on the server (planner="diffusion" only).
++            remove_outliers: Whether to filter point cloud outliers (planner="diffusion"
++                only -- graspmoe always runs its own outlier removal, see
++                moe_outlier_threshold/moe_outlier_k).
++            scene_point_cloud: Optional (S, 3) float32 array of the surrounding
++                scene (table, other objects, ...) with the target object's own
++                points already excluded. When provided, the server drops any
++                returned grasp whose gripper mesh would collide with it.
++            collision_threshold: Distance (meters) under which a gripper surface
++                sample counts as colliding with scene_point_cloud.
++            max_scene_points: Server-side random-downsample cap for scene_point_cloud
++                before collision checking.
++            moe_num_yaws: planner="graspmoe" only -- yaw samples per OBB face.
++            moe_z_offsets_cm: planner="graspmoe" only -- standoff offsets (cm)
++                swept along each face's approach direction.
++            moe_outlier_threshold / moe_outlier_k: planner="graspmoe" only --
++                outlier-removal hyperparameters applied once before both branches.
++            moe_obb_mode: planner="graspmoe" only -- "advanced" (SOR + hull +
++                rotating calipers) or "pca".
++            moe_skip_obb_rule: planner="graspmoe" only -- "auto" skips the OBB
++                branch when every extent exceeds the gripper's jaw width (object
++                too big to enclose); "never" always runs it.
++            moe_obb_density: planner="graspmoe" only -- "sparse" (single
++                position per face), "dense" (positions swept along the long
++                axis), or "dense-topandside" (dense positions on the top face
++                AND all 4 side faces -- the richest option, includes top-down).
++            moe_obb_position_spacing_cm: planner="graspmoe" only -- spacing (cm)
++                for position sweeps in "dense"/"dense-topandside" modes.
+ 
+         Returns:
+             grasps: (M, 4, 4) float32 array of 6-DOF grasp poses.
+@@ -137,6 +184,7 @@ class GraspGenClient:
+         payload = {
+             "action": "infer",
+             "point_cloud": point_cloud,
++            "planner": planner,
+             "grasp_threshold": grasp_threshold,
+             "num_grasps": num_grasps,
+             "topk_num_grasps": topk_num_grasps,
+@@ -144,6 +192,24 @@ class GraspGenClient:
+             "max_tries": max_tries,
+             "remove_outliers": remove_outliers,
+         }
++        if planner == "graspmoe":
++            payload["moe_num_yaws"] = moe_num_yaws
++            payload["moe_z_offsets_cm"] = moe_z_offsets_cm
++            payload["moe_outlier_threshold"] = moe_outlier_threshold
++            payload["moe_outlier_k"] = moe_outlier_k
++            payload["moe_obb_mode"] = moe_obb_mode
++            payload["moe_skip_obb_rule"] = moe_skip_obb_rule
++            payload["moe_obb_density"] = moe_obb_density
++            payload["moe_obb_position_spacing_cm"] = moe_obb_position_spacing_cm
++        if scene_point_cloud is not None:
++            scene_point_cloud = np.asarray(scene_point_cloud, dtype=np.float32)
++            if scene_point_cloud.ndim != 2 or scene_point_cloud.shape[1] != 3:
++                raise ValueError(
++                    f"scene_point_cloud must be (S, 3), got {scene_point_cloud.shape}"
++                )
++            payload["scene_point_cloud"] = scene_point_cloud
++            payload["collision_threshold"] = collision_threshold
++            payload["max_scene_points"] = max_scene_points
+ 
+         response = self._request(payload)
+         grasps = np.asarray(response["grasps"], dtype=np.float32)
+diff --git a/grasp_gen/serving/zmq_server.py b/grasp_gen/serving/zmq_server.py
+index de85e42..6343c53 100644
+--- a/grasp_gen/serving/zmq_server.py
++++ b/grasp_gen/serving/zmq_server.py
+@@ -11,6 +11,7 @@ import logging
+ from typing import Optional
+ 
+ import numpy as np
++import trimesh
+ import zmq
+ import msgpack
+ import msgpack_numpy
+@@ -18,9 +19,14 @@ import msgpack_numpy
+ msgpack_numpy.patch()
+ 
+ from grasp_gen.grasp_server import GraspGenSampler, load_grasp_cfg
++from grasp_gen.robot import get_gripper_info
++from grasp_gen.samplers import run_graspmoe
++from grasp_gen.utils.point_cloud_utils import filter_colliding_grasps_fast
+ 
+ logger = logging.getLogger(__name__)
+ 
++_NUM_GRIPPER_COLLISION_SAMPLES = 2000
++
+ 
+ class GraspGenZMQServer:
+     """ZMQ server that wraps GraspGenSampler for remote grasp inference.
+@@ -36,7 +42,7 @@ class GraspGenZMQServer:
+         self,
+         gripper_config: str,
+         host: str = "0.0.0.0",
+-        port: int = 5556,
++        port: int = 5558,
+     ) -> None:
+         self._host = host
+         self._port = port
+@@ -55,6 +61,29 @@ class GraspGenZMQServer:
+         self._sampler = GraspGenSampler(self._cfg)
+         logger.info("Model loaded and ready for inference")
+ 
++        # Pre-sample the gripper's own collision mesh once so per-request collision
++        # filtering (scene_point_cloud, cf. _handle_infer) doesn't re-sample it every
++        # call. None (collision filtering disabled) if the mesh can't be loaded for
++        # this gripper — infer() still works, it just never filters on scene_point_cloud.
++        self._gripper_surface_points = None
++        try:
++            gripper_info = get_gripper_info(self._gripper_name)
++            sampled, _ = trimesh.sample.sample_surface(
++                gripper_info.collision_mesh, _NUM_GRIPPER_COLLISION_SAMPLES
++            )
++            self._gripper_surface_points = np.asarray(sampled, dtype=np.float32)
++            logger.info(
++                "Pre-sampled %d gripper collision surface points for scene_point_cloud filtering",
++                len(self._gripper_surface_points),
++            )
++        except Exception:
++            logger.warning(
++                "Could not load collision mesh for gripper '%s' — scene_point_cloud "
++                "collision filtering will be skipped on every request",
++                self._gripper_name,
++                exc_info=True,
++            )
++
+         self._metadata = {
+             "gripper_name": self._gripper_name,
+             "model_name": self._model_name,
+@@ -105,43 +134,162 @@ class GraspGenZMQServer:
+                 "error": f"point_cloud must be (N, 3), got {point_cloud.shape}"
+             }
+ 
+-        params = {
+-            "grasp_threshold": float(request.get("grasp_threshold", -1.0)),
+-            "num_grasps": int(request.get("num_grasps", 200)),
+-            "topk_num_grasps": int(request.get("topk_num_grasps", -1)),
+-            "min_grasps": int(request.get("min_grasps", 40)),
+-            "max_tries": int(request.get("max_tries", 6)),
+-            "remove_outliers": bool(request.get("remove_outliers", True)),
+-        }
++        planner = str(request.get("planner", "diffusion"))
++        if planner not in ("diffusion", "graspmoe"):
++            return {
++                "error": f"Unknown planner '{planner}' (expected 'diffusion' or 'graspmoe')"
++            }
++
++        branch_tags: Optional[list] = None
++        skipped_obb: Optional[bool] = None
+ 
+         t0 = time.monotonic()
+-        grasps, grasp_conf = GraspGenSampler.run_inference(
+-            point_cloud, self._sampler, **params
+-        )
++        if planner == "graspmoe":
++            # OBB-swept candidates (top face + 4 sides by default) unioned with
++            # the diffusion sampler, both scored by the same discriminator --
++            # see grasp_gen/samplers/graspmoe.py. Defaults mirror
++            # scripts/demo_scene_pc.py's --planner graspmoe CLI defaults.
++            moe_params = {
++                "grasp_threshold": float(request.get("grasp_threshold", -1.0)),
++                "num_grasps": int(request.get("num_grasps", 200)),
++                "topk_num_grasps": int(request.get("topk_num_grasps", -1)),
++                "num_yaws": int(request.get("moe_num_yaws", 36)),
++                "z_offsets_cm": tuple(
++                    request.get("moe_z_offsets_cm", (-8, -6, -4, -2, 0))
++                ),
++                "outlier_threshold": float(
++                    request.get("moe_outlier_threshold", 0.014)
++                ),
++                "outlier_k": int(request.get("moe_outlier_k", 20)),
++                "obb_mode": str(request.get("moe_obb_mode", "advanced")),
++                "skip_obb_rule": str(request.get("moe_skip_obb_rule", "auto")),
++                "obb_density": str(
++                    request.get("moe_obb_density", "dense-topandside")
++                ),
++                "obb_position_spacing_m": float(
++                    request.get("moe_obb_position_spacing_cm", 1.0)
++                )
++                / 100.0,
++            }
++            try:
++                moe = run_graspmoe(point_cloud, self._sampler, **moe_params)
++            except ValueError as exc:
++                # e.g. suction gripper with no `width` field in its YAML --
++                # see graspmoe._resolve_gripper_geometry.
++                return {"error": f"graspmoe planner error: {exc}"}
++            grasps_np = np.concatenate(
++                [moe["grasps_diff"], moe["grasps_obb"]], axis=0
++            ).astype(np.float32)
++            conf_np = np.concatenate(
++                [moe["scores_diff"], moe["scores_obb"]], axis=0
++            ).astype(np.float32)
++            branch_tags = ["diff"] * len(moe["grasps_diff"]) + ["obb"] * len(
++                moe["grasps_obb"]
++            )
++            skipped_obb = bool(moe["skipped_obb"])
++        else:
++            params = {
++                "grasp_threshold": float(request.get("grasp_threshold", -1.0)),
++                "num_grasps": int(request.get("num_grasps", 200)),
++                "topk_num_grasps": int(request.get("topk_num_grasps", -1)),
++                "min_grasps": int(request.get("min_grasps", 40)),
++                "max_tries": int(request.get("max_tries", 6)),
++                "remove_outliers": bool(request.get("remove_outliers", True)),
++            }
++            grasps, grasp_conf = GraspGenSampler.run_inference(
++                point_cloud, self._sampler, **params
++            )
++            grasps_np = (
++                grasps.cpu().numpy().astype(np.float32)
++                if len(grasps) > 0
++                else np.empty((0, 4, 4), dtype=np.float32)
++            )
++            conf_np = (
++                grasp_conf.cpu().numpy().astype(np.float32)
++                if len(grasp_conf) > 0
++                else np.empty((0,), dtype=np.float32)
++            )
+         infer_ms = (time.monotonic() - t0) * 1000
+ 
+-        if len(grasps) == 0:
+-            return {
++        if len(grasps_np) == 0:
++            response = {
+                 "grasps": np.empty((0, 4, 4), dtype=np.float32),
+                 "confidences": np.empty((0,), dtype=np.float32),
+                 "num_grasps": 0,
+                 "timing": {"infer_ms": infer_ms},
++                "planner": planner,
+             }
+-
+-        grasps_np = grasps.cpu().numpy().astype(np.float32)
+-        conf_np = grasp_conf.cpu().numpy().astype(np.float32)
++            if branch_tags is not None:
++                response["branch_tags"] = []
++                response["skipped_obb"] = skipped_obb
++            return response
+ 
+         logger.info(
+-            "Inferred %d grasps in %.1f ms (conf range %.3f - %.3f)",
++            "Inferred %d grasps (planner=%s) in %.1f ms (conf range %.3f - %.3f)",
+             len(grasps_np),
++            planner,
+             infer_ms,
+             conf_np.min(),
+             conf_np.max(),
+         )
+ 
+-        return {
++        timing = {"infer_ms": infer_ms}
++        response = {
+             "grasps": grasps_np,
+             "confidences": conf_np,
+             "num_grasps": len(grasps_np),
+-            "timing": {"infer_ms": infer_ms},
++            "timing": timing,
++            "planner": planner,
+         }
++        if branch_tags is not None:
++            response["branch_tags"] = branch_tags
++            response["skipped_obb"] = skipped_obb
++
++        # Optional collision filtering against a scene point cloud (table, other
++        # objects, ...) with the target object's own points already excluded by the
++        # caller. Opt-in: skipped entirely if the client doesn't send scene_point_cloud,
++        # or if this gripper's collision mesh failed to load at startup.
++        scene_point_cloud = request.get("scene_point_cloud")
++        if scene_point_cloud is not None and self._gripper_surface_points is not None:
++            scene_pc = np.asarray(scene_point_cloud, dtype=np.float32)
++            max_scene_points = int(request.get("max_scene_points", 8192))
++            if len(scene_pc) > max_scene_points:
++                idx = np.random.choice(len(scene_pc), max_scene_points, replace=False)
++                scene_pc = scene_pc[idx]
++
++            collision_threshold = float(request.get("collision_threshold", 0.02))
++
++            t1 = time.monotonic()
++            collision_free_mask = filter_colliding_grasps_fast(
++                scene_pc=scene_pc,
++                grasp_poses=grasps_np,
++                collision_threshold=collision_threshold,
++                gripper_surface_points=self._gripper_surface_points,
++            )
++            collision_filter_ms = (time.monotonic() - t1) * 1000
++
++            n_before = len(grasps_np)
++            grasps_np = grasps_np[collision_free_mask]
++            conf_np = conf_np[collision_free_mask]
++            if branch_tags is not None:
++                branch_tags = [
++                    tag for tag, keep in zip(branch_tags, collision_free_mask) if keep
++                ]
++                response["branch_tags"] = branch_tags
++
++            logger.info(
++                "Collision filter: %d/%d grasps collision-free (thr=%.3fm, scene_pts=%d) in %.1f ms",
++                len(grasps_np),
++                n_before,
++                collision_threshold,
++                len(scene_pc),
++                collision_filter_ms,
++            )
++
++            timing["collision_filter_ms"] = collision_filter_ms
++            response["grasps"] = grasps_np
++            response["confidences"] = conf_np
++            response["num_grasps"] = len(grasps_np)
++            response["num_grasps_before_collision_filter"] = n_before
++
++        return response
+diff --git a/install_pointnet.sh b/install_pointnet.sh
+index 62d2f30..04e8b95 100755
+--- a/install_pointnet.sh
++++ b/install_pointnet.sh
+@@ -7,9 +7,9 @@ set -e  # Exit on any error
+ echo "🔧 Setting up CUDA environment variables for pointnet2_ops compilation..."
+ 
+ # Set CUDA compilation environment variables
+-export CC=/usr/bin/g++
+-export CXX=/usr/bin/g++
+-export CUDAHOSTCXX=/usr/bin/g++
++export CC=/usr/bin/gcc-12
++export CXX=/usr/bin/g++-12
++export CUDAHOSTCXX=/usr/bin/g++-12
+ export TORCH_CUDA_ARCH_LIST="8.6"
+ 
+ echo "✅ CUDA environment configured"
+diff --git a/mcp/README.md b/mcp/README.md
+index 6d99b4e..b78dcfc 100644
+--- a/mcp/README.md
++++ b/mcp/README.md
+@@ -73,7 +73,7 @@ Add the following to `.cursor/mcp.json` in your workspace (or to your global Cur
+       ],
+       "env": {
+         "GRASPGEN_HOST": "localhost",
+-        "GRASPGEN_PORT": "5556"
++        "GRASPGEN_PORT": "5558"
+       }
+     }
+   }
+@@ -90,7 +90,7 @@ Or if you installed with pip:
+       "args": ["-m", "mcp_server_graspgen"],
+       "env": {
+         "GRASPGEN_HOST": "localhost",
+-        "GRASPGEN_PORT": "5556"
++        "GRASPGEN_PORT": "5558"
+       }
+     }
+   }
+@@ -113,7 +113,7 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
+       ],
+       "env": {
+         "GRASPGEN_HOST": "localhost",
+-        "GRASPGEN_PORT": "5556"
++        "GRASPGEN_PORT": "5558"
+       }
+     }
+   }
+@@ -137,7 +137,7 @@ Add to `.vscode/mcp.json` in your workspace:
+         ],
+         "env": {
+           "GRASPGEN_HOST": "localhost",
+-          "GRASPGEN_PORT": "5556"
++          "GRASPGEN_PORT": "5558"
+         }
+       }
+     }
+@@ -150,7 +150,7 @@ Add to `.vscode/mcp.json` in your workspace:
+ If the GraspGen ZMQ server is on a different host or port, set the environment variables:
+ 
+ - `GRASPGEN_HOST` — default: `localhost`
+-- `GRASPGEN_PORT` — default: `5556`
++- `GRASPGEN_PORT` — default: `5558`
+ 
+ Or pass them as CLI arguments:
+ 
+diff --git a/mcp/src/mcp_server_graspgen/__init__.py b/mcp/src/mcp_server_graspgen/__init__.py
+index 0676ecd..7180d02 100644
+--- a/mcp/src/mcp_server_graspgen/__init__.py
++++ b/mcp/src/mcp_server_graspgen/__init__.py
+@@ -26,8 +26,8 @@ def main():
+     parser.add_argument(
+         "--port",
+         type=int,
+-        default=5556,
+-        help="GraspGen ZMQ server port (default: 5556)",
++        default=5558,
++        help="GraspGen ZMQ server port (default: 5558)",
+     )
+     args = parser.parse_args()
+     asyncio.run(serve(args.host, args.port))
+diff --git a/mcp/src/mcp_server_graspgen/server.py b/mcp/src/mcp_server_graspgen/server.py
+index 40ffa39..c5a71b5 100644
+--- a/mcp/src/mcp_server_graspgen/server.py
++++ b/mcp/src/mcp_server_graspgen/server.py
+@@ -60,7 +60,7 @@ def _get_server_addr() -> str:
+     global _server_addr
+     if not _server_addr:
+         host = os.environ.get("GRASPGEN_HOST", "localhost")
+-        port = os.environ.get("GRASPGEN_PORT", "5556")
++        port = os.environ.get("GRASPGEN_PORT", "5558")
+         _server_addr = f"tcp://{host}:{port}"
+     return _server_addr
+ 
+@@ -443,7 +443,7 @@ def _format_grasp_results(grasps: np.ndarray, confidences: np.ndarray, timing: d
+ # ---------------------------------------------------------------------------
+ 
+ 
+-async def serve(host: str = "localhost", port: int = 5556) -> None:
++async def serve(host: str = "localhost", port: int = 5558) -> None:
+     """Run the GraspGen MCP server over stdio."""
+     global _server_addr
+     _server_addr = f"tcp://{host}:{port}"
+diff --git a/tests/test_serving.py b/tests/test_serving.py
+index 0d74fb8..64604c2 100644
+--- a/tests/test_serving.py
++++ b/tests/test_serving.py
+@@ -325,7 +325,7 @@ class TestClientProtocol:
+ # ===================================================================
+ 
+ 
+-def _live_server_available(host: str = "localhost", port: int = 5556) -> bool:
++def _live_server_available(host: str = "localhost", port: int = 5558) -> bool:
+     """Quick probe: can we connect and get a health response?"""
+     ctx = zmq.Context()
+     sock = ctx.socket(zmq.REQ)
+@@ -346,7 +346,7 @@ def _live_server_available(host: str = "localhost", port: int = 5556) -> bool:
+ 
+ @pytest.mark.integration
+ class TestLiveServer:
+-    """Tests that require a running GraspGen server on localhost:5556.
++    """Tests that require a running GraspGen server on localhost:5558.
+ 
+     Run with: pytest tests/test_serving.py -m integration
+     These are skipped by default unless the server is reachable.
+@@ -355,18 +355,18 @@ class TestLiveServer:
+     @pytest.fixture(autouse=True)
+     def _require_live_server(self):
+         if not _live_server_available():
+-            pytest.skip("Live GraspGen server not available on localhost:5556")
++            pytest.skip("Live GraspGen server not available on localhost:5558")
+ 
+     def test_live_health(self):
+         from grasp_gen.serving.zmq_client import GraspGenClient
+ 
+-        with GraspGenClient(host="localhost", port=5556, wait_for_server=False, timeout_ms=10000) as client:
++        with GraspGenClient(host="localhost", port=5558, wait_for_server=False, timeout_ms=10000) as client:
+             assert client.health_check() is True
+ 
+     def test_live_metadata(self):
+         from grasp_gen.serving.zmq_client import GraspGenClient
+ 
+-        with GraspGenClient(host="localhost", port=5556, wait_for_server=True, timeout_ms=10000) as client:
++        with GraspGenClient(host="localhost", port=5558, wait_for_server=True, timeout_ms=10000) as client:
+             meta = client.server_metadata
+             assert "gripper_name" in meta
+             assert "model_name" in meta
+@@ -375,7 +375,7 @@ class TestLiveServer:
+         from grasp_gen.serving.zmq_client import GraspGenClient
+ 
+         pc = np.random.randn(2000, 3).astype(np.float32) * 0.05
+-        with GraspGenClient(host="localhost", port=5556, wait_for_server=True, timeout_ms=60000) as client:
++        with GraspGenClient(host="localhost", port=5558, wait_for_server=True, timeout_ms=60000) as client:
+             grasps, confs = client.infer(
+                 pc, num_grasps=50, topk_num_grasps=10,
+             )
+@@ -391,7 +391,7 @@ class TestLiveServer:
+             pytest.skip("Example PCD not found")
+ 
+         pc = load_point_cloud_from_file(EXAMPLE_PCD)
+-        with GraspGenClient(host="localhost", port=5556, wait_for_server=True, timeout_ms=60000) as client:
++        with GraspGenClient(host="localhost", port=5558, wait_for_server=True, timeout_ms=60000) as client:
+             grasps, confs = client.infer(
+                 pc, num_grasps=100, topk_num_grasps=20,
+             )
+@@ -409,7 +409,7 @@ class TestLiveServer:
+             pytest.skip("Example mesh not found")
+ 
+         pc = load_point_cloud_from_mesh(EXAMPLE_MESH, scale=1.0, num_points=2000)
+-        with GraspGenClient(host="localhost", port=5556, wait_for_server=True, timeout_ms=60000) as client:
++        with GraspGenClient(host="localhost", port=5558, wait_for_server=True, timeout_ms=60000) as client:
+             grasps, confs = client.infer(
+                 pc, num_grasps=100, topk_num_grasps=20,
+             )

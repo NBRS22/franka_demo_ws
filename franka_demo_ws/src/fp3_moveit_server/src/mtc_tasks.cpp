@@ -1,0 +1,208 @@
+#include "fp3_moveit_server/mtc_tasks.hpp"
+
+#include <array>
+
+#include "moveit/task_constructor/task.h"
+#include "moveit/task_constructor/stages/current_state.h"
+#include "moveit/task_constructor/stages/connect.h"
+#include "moveit/task_constructor/stages/move_relative.h"
+#include "moveit/task_constructor/stages/fixed_cartesian_poses.h"
+#include "moveit/task_constructor/stages/compute_ik.h"
+#include "moveit/task_constructor/stages/modify_planning_scene.h"
+#include "moveit/task_constructor/solvers/pipeline_planner.h"
+#include "moveit/task_constructor/solvers/cartesian_path.h"
+#include "moveit/trajectory_processing/time_optimal_trajectory_generation.hpp"
+
+namespace mtc = moveit::task_constructor;
+
+namespace
+{
+// q_marker = q_grasp (x) R, R = (w=cos(-45deg), x=0, y=sin(-45deg), z=0).
+constexpr double kSqrt2Over2 = 0.70710678118654752440;
+constexpr double kArrowLength = 0.08;  // meters, matches visualize_grasps_node.py
+
+// Software-only correction (URDF untouched) added to every IK target along
+// its local +Z (approach axis, points down for a top-down grasp), for the
+// D405 mount that shifts the real TCP ~5mm from fp3_hand_tcp. Currently 0.0
+// (disabled): the sign is unverified -- if the real fingertips sit 5mm
+// further along +Z than the URDF says, the correct value is -0.005.
+constexpr double kHandTcpZOffsetM = 0.0;
+}  // namespace
+
+geometry_msgs::msg::Quaternion approachToArrowOrientation(const geometry_msgs::msg::Quaternion & q)
+{
+  geometry_msgs::msg::Quaternion out;
+  out.w = kSqrt2Over2 * (q.w + q.y);
+  out.x = kSqrt2Over2 * (q.x + q.z);
+  out.y = kSqrt2Over2 * (q.y - q.w);
+  out.z = kSqrt2Over2 * (q.z - q.x);
+  return out;
+}
+
+std::array<double, 3> approachAxisWorld(const geometry_msgs::msg::Quaternion & q)
+{
+  return {
+    2.0 * (q.x * q.z + q.w * q.y),
+    2.0 * (q.y * q.z - q.w * q.x),
+    1.0 - 2.0 * (q.x * q.x + q.y * q.y),
+  };
+}
+
+visualization_msgs::msg::Marker approachArrowMarker(
+  const geometry_msgs::msg::PoseStamped & pose,
+  const std::string & ns, int32_t id, float r, float g, float b, float a)
+{
+  const auto axis = approachAxisWorld(pose.pose.orientation);
+  visualization_msgs::msg::Marker m;
+  m.header = pose.header;
+  m.ns = ns;
+  m.id = id;
+  m.type = visualization_msgs::msg::Marker::ARROW;
+  m.action = visualization_msgs::msg::Marker::ADD;
+  m.pose.position.x = pose.pose.position.x - kArrowLength * axis[0];
+  m.pose.position.y = pose.pose.position.y - kArrowLength * axis[1];
+  m.pose.position.z = pose.pose.position.z - kArrowLength * axis[2];
+  m.pose.orientation = approachToArrowOrientation(pose.pose.orientation);
+  m.scale.x = kArrowLength;
+  m.scale.y = 0.012;
+  m.scale.z = 0.018;
+  m.color.r = r;
+  m.color.g = g;
+  m.color.b = b;
+  m.color.a = a;
+  return m;
+}
+
+bool planAndExecuteApproach(
+  rclcpp::Node::SharedPtr node,
+  const MtcParams & mtc_params,
+  const ApproachParams & approach,
+  const geometry_msgs::msg::PoseStamped & pose,
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub,
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr marker_pub)
+{
+  // Apply the fp3_hand_tcp physical-offset correction (cf. kHandTcpZOffsetM)
+  // before this pose is used for anything downstream -- IK target,
+  // published pose, and marker all reflect the corrected pose, so they stay
+  // consistent with what's actually commanded.
+  geometry_msgs::msg::PoseStamped corrected_pose = pose;
+  {
+    const auto axis = approachAxisWorld(pose.pose.orientation);
+    corrected_pose.pose.position.x += kHandTcpZOffsetM * axis[0];
+    corrected_pose.pose.position.y += kHandTcpZOffsetM * axis[1];
+    corrected_pose.pose.position.z += kHandTcpZOffsetM * axis[2];
+  }
+
+  mtc::Task task;
+  task.setName("mtc_pick approach");
+  task.loadRobotModel(node);
+
+  task.add(std::make_unique<mtc::stages::CurrentState>("current state"));
+  auto * current_state_ptr = task.stages()->findChild("current state");
+
+  auto sampling_planner =
+    std::make_shared<mtc::solvers::PipelinePlanner>(node, "move_group");
+  sampling_planner->setMaxVelocityScalingFactor(mtc_params.velocity_scaling_factor);
+  sampling_planner->setMaxAccelerationScalingFactor(mtc_params.acceleration_scaling_factor);
+
+  mtc::stages::Connect::GroupPlannerVector planners = {
+    {mtc_params.planning_group, sampling_planner}};
+  task.add(std::make_unique<mtc::stages::Connect>("connect", planners));
+
+  auto cartesian_planner = std::make_shared<mtc::solvers::CartesianPath>();
+  cartesian_planner->setMaxVelocityScalingFactor(mtc_params.velocity_scaling_factor);
+  cartesian_planner->setMaxAccelerationScalingFactor(mtc_params.acceleration_scaling_factor);
+  // TOTG ensures zero terminal velocity, required by fp3_arm_controller
+  // (see config/controller_overrides.yaml).
+  cartesian_planner->setTimeParameterization(
+    std::make_shared<trajectory_processing::TimeOptimalTrajectoryGeneration>());
+
+  auto approach_stage =
+    std::make_unique<mtc::stages::MoveRelative>("approach", cartesian_planner);
+  approach_stage->setGroup(mtc_params.planning_group);
+  approach_stage->setIKFrame(mtc_params.tcp_frame);
+  approach_stage->setMinMaxDistance(approach.min_distance, approach.max_distance);
+  geometry_msgs::msg::Vector3Stamped approach_dir;
+  approach_dir.header.frame_id = mtc_params.tcp_frame;
+  approach_dir.vector.z = 1.0;
+  approach_stage->setDirection(approach_dir);
+  task.add(std::move(approach_stage));
+
+  auto pose_generator =
+    std::make_unique<mtc::stages::FixedCartesianPoses>("grasp pose");
+  pose_generator->addPose(corrected_pose);
+  pose_generator->setMonitoredStage(current_state_ptr);
+
+  auto ik = std::make_unique<mtc::stages::ComputeIK>(
+    "grasp IK", std::move(pose_generator));
+  ik->setGroup(mtc_params.planning_group);
+  ik->setEndEffector(mtc_params.eef_name);
+  ik->setIKFrame(mtc_params.tcp_frame);
+  ik->setMaxIKSolutions(4);
+  // FixedCartesianPoses sets "target_pose" on its InterfaceState; ComputeIK
+  // only reads it from there if told to pull from the interface.
+  ik->properties().configureInitFrom(mtc::Stage::INTERFACE, {"target_pose"});
+  task.add(std::move(ik));
+
+  auto allow_collision =
+    std::make_unique<mtc::stages::ModifyPlanningScene>("allow hand/object collision");
+  allow_collision->allowCollisions(
+    mtc_params.object_id, mtc_params.hand_touch_links, true);
+  task.add(std::move(allow_collision));
+
+  if (task.plan(1) != moveit::core::MoveItErrorCode::SUCCESS ||
+    task.numSolutions() == 0)
+  {
+    return false;
+  }
+
+  // Planning succeeded for this candidate: it's the one about to be
+  // executed. Publish before execute() so a listener sees it ahead of the
+  // actual motion, not after the fact.
+  if (pose_pub) {
+    pose_pub->publish(corrected_pose);
+  }
+  if (marker_pub) {
+    marker_pub->publish(approachArrowMarker(corrected_pose));
+  }
+
+  return task.execute(*task.solutions().front()) ==
+    moveit::core::MoveItErrorCode::SUCCESS;
+}
+
+bool planAndExecuteLift(
+  rclcpp::Node::SharedPtr node,
+  const MtcParams & mtc_params,
+  const LiftParams & lift)
+{
+  mtc::Task task;
+  task.setName("mtc_pick lift");
+  task.loadRobotModel(node);
+
+  task.add(std::make_unique<mtc::stages::CurrentState>("current state"));
+
+  auto cartesian_planner = std::make_shared<mtc::solvers::CartesianPath>();
+  cartesian_planner->setMaxVelocityScalingFactor(mtc_params.velocity_scaling_factor);
+  cartesian_planner->setMaxAccelerationScalingFactor(mtc_params.acceleration_scaling_factor);
+  cartesian_planner->setTimeParameterization(
+    std::make_shared<trajectory_processing::TimeOptimalTrajectoryGeneration>());
+
+  auto lift_stage =
+    std::make_unique<mtc::stages::MoveRelative>("lift", cartesian_planner);
+  lift_stage->setGroup(mtc_params.planning_group);
+  lift_stage->setIKFrame(mtc_params.tcp_frame);
+  lift_stage->setMinMaxDistance(lift.min_distance, lift.max_distance);
+  geometry_msgs::msg::Vector3Stamped lift_dir;
+  lift_dir.header.frame_id = "fp3_link0";  // fixed base frame = world Z+
+  lift_dir.vector.z = 1.0;
+  lift_stage->setDirection(lift_dir);
+  task.add(std::move(lift_stage));
+
+  if (task.plan(1) != moveit::core::MoveItErrorCode::SUCCESS ||
+    task.numSolutions() == 0)
+  {
+    return false;
+  }
+  return task.execute(*task.solutions().front()) ==
+    moveit::core::MoveItErrorCode::SUCCESS;
+}

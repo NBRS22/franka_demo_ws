@@ -1,0 +1,5 @@
+geometry_msgs/PoseArray grasps
+float32[] scores
+---
+bool success
+string message

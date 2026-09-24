@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>calib_sample_guard</name>
+  <version>0.1.0</version>
+  <description>
+    Live guardrail for hand-eye calibration sampling: watches /detections for
+    the calibration tag and continuously reports reprojection error and tilt
+    angle from head-on, warning before a bad sample (noisy detection, or a
+    near-head-on view at risk of the planar-PnP pose-ambiguity problem) gets
+    taken -- meant to run alongside easy_handeye2's rqt_calibrator during a
+    live session, not as an after-the-fact audit (saved samples don't retain
+    the raw pixel corners needed to recompute this).
+  </description>
+  <maintainer email="n.elbachari@gmail.com">nour el bachari</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>apriltag_msgs</depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

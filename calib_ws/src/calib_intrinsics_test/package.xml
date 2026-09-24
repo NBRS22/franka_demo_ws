@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>calib_intrinsics_test</name>
+  <version>0.1.0</version>
+  <description>
+    Diagnostics for the D455 color camera intrinsics, independent of the
+    hand-eye calibration being diagnosed elsewhere: intrinsics_test compares
+    a robot-commanded 3D displacement against what the camera measures;
+    grid_intrinsics_check is fully static (no robot) -- reads a printed 3x3
+    grid of AprilTags with known inter-tag distances and checks the camera
+    reconstructs that known geometry correctly.
+  </description>
+  <maintainer email="n.elbachari@gmail.com">nour el bachari</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>tf2_ros</depend>
+  <depend>geometry_msgs</depend>
+  <depend>moveit_msgs</depend>
+  <depend>shape_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>apriltag_msgs</depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>fp3_moveit_server</exec_depend>
+  <exec_depend>realsense2_camera</exec_depend>
+  <exec_depend>apriltag_ros</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

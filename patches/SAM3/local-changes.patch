@@ -1,0 +1,17 @@
+diff --git a/pyproject.toml b/pyproject.toml
+index 9df1b67..b4958d4 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -36,6 +36,12 @@ dependencies = [
+ ]
+ 
+ [project.optional-dependencies]
++inference = [
++    "einops",
++    "pycocotools",
++    "psutil",
++    "setuptools<80",
++]
+ dev = [
+     "pytest",
+     "pytest-cov",

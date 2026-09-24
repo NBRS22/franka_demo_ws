@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>calib_bringup</name>
+  <version>0.1.0</version>
+  <description>
+    Root launch entry point for calib_ws: brings up a full hand-eye
+    calibration session end-to-end -- camera, apriltag detection,
+    easy_handeye2's calibrator UI, the real arm stack (fp3_moveit_server,
+    from franka_demo_ws), and calib_pose_tour to drive sample-taking through
+    the real pick working volume.
+  </description>
+  <maintainer email="n.elbachari@gmail.com">nour el bachari</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>realsense2_camera</exec_depend>
+  <exec_depend>apriltag_ros</exec_depend>
+  <exec_depend>easy_handeye2</exec_depend>
+  <exec_depend>handeye_tf_publisher</exec_depend>
+  <exec_depend>calib_pose_tour</exec_depend>
+  <exec_depend>calib_rigidity_test</exec_depend>
+  <exec_depend>calib_sample_guard</exec_depend>
+  <exec_depend>calib_axis_test</exec_depend>
+  <exec_depend>fp3_moveit_server</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

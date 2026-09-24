@@ -1,0 +1,17 @@
+# Configuration file for example.launch.py / franka.launch.py
+# Fake-hardware config for a single FP3 (Franka Production 3) arm.
+# Use this to test controllers and RViz visualization without a real robot connected.
+#
+# Note: This is a launch configuration file, not a node parameter file (see: controllers.yaml).
+# Ensure all boolean values are quoted ("true" or "false") to avoid YAML parsing issues.
+
+ROBOT1: # Arbitrary identifier for the first robot (a Mnemonic)
+  robot_type: "fp3" # FP3 uses distinct meshes/firmware (Arm3P) from FR3 (Arm3R)
+  arm_prefix: ""
+  fake_sensor_commands: "false"
+  joint_state_rate: 30
+  load_gripper: "true" # Franka Hand, also simulated under fake hardware
+  namespace: ""
+  robot_ip: "localhost" # Unused when use_fake_hardware is true, but required by the loader
+  use_fake_hardware: "true" # No real robot connection - pure simulation
+  use_rviz: "true"
