@@ -25,6 +25,10 @@ echo "==> franka_ros2 at $(git -C "$WS/src" describe --tags --always)"
 echo "==> Importing dependencies (libfranka, franka_description, ...)"
 command -v vcs >/dev/null || sudo apt-get install -y python3-vcstool
 vcs import "$WS/src" < "$WS/src/dependency.repos"
+# libfranka (and possibly others) need their git submodules, which `vcs import` does not fetch
+for gm in "$WS"/src/*/.gitmodules; do
+  [ -f "$gm" ] && git -C "$(dirname "$gm")" submodule update --init --recursive
+done
 
 echo "==> rosdep (asks for sudo only if some package is missing)"
 rosdep update >/dev/null
