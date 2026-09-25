@@ -1,5 +1,6 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.conditions import LaunchConfigurationEquals
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
@@ -34,6 +35,7 @@ def generate_launch_description():
     use_fake_hardware = LaunchConfiguration('use_fake_hardware')
     robot_ip = LaunchConfiguration('robot_ip')
     use_rviz = LaunchConfiguration('use_rviz')
+    start_arm_stack = LaunchConfiguration('start_arm_stack')
     calibration_name = LaunchConfiguration('calibration_name')
     apriltag_params_file = LaunchConfiguration('apriltag_params_file')
     camera = LaunchConfiguration('camera')
@@ -47,6 +49,7 @@ def generate_launch_description():
             'robot_ip': robot_ip,
             'use_rviz': use_rviz,
         }.items(),
+        condition=IfCondition(start_arm_stack),
     )
 
     realsense_d455 = ExecuteProcess(
@@ -117,6 +120,14 @@ def generate_launch_description():
             'robot_ip', default_value='192.168.1.1',
             description='FP3 controller IP (ignored if use_fake_hardware:=true)'),
         DeclareLaunchArgument('use_rviz', default_value='true'),
+        DeclareLaunchArgument(
+            'start_arm_stack', default_value='true',
+            description=(
+                'Start fp3_moveit_server (MoveIt + ros2_control, the arm is then held '
+                'stiff by fp3_arm_controller). Set false to hand-guide the arm: start '
+                'franka_bringup\'s gravity_compensation_example_controller yourself '
+                'instead (only ONE process may hold the robot connection), which also '
+                'provides robot_state_publisher / joint states.')),
         DeclareLaunchArgument(
             'camera', default_value='d455', choices=['d455', 'd405'],
             description=(

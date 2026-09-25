@@ -4,19 +4,23 @@ Workspace ROS2 (Jazzy) dédié à la calibration eye-on-base `fp3_link0 → came
 
 ## Packages
 
+Documentation complète (rôle de chaque package, setup, dépendances externes, procédure) : **`README.md`** de ce dossier.
+
 | Package | Rôle |
 |---|---|
-| `calib_bringup` | Launch racine — une commande lance tout (caméra, apriltag, easy_handeye2, bras réel) |
-| `handeye_tf_publisher` | Publie `fp3_link0 → camera_link` depuis un `.calib` easy_handeye2, + outil `watch_calibration_convergence.py` |
-| `fp3_apriltag_demo` | Vérification physique par grasp+lift réel sur la pose calculée du tag |
-| `easy_handeye2` / `easy_handeye2_msgs` | Clone externe — solveur de calibration (Tsai/Park/Horaud/Andreff/Daniilidis) |
-| `apriltag_ros` | Clone externe — détection AprilTag |
+| `calib_bringup` | Launch racine (caméra, apriltag, easy_handeye2, sample_guard, pile MoveIt optionnelle `start_arm_stack`) + `evaluate_calibration.launch.py` |
+| `calib_sample_guard` | Garde-fou live à la prise d'échantillon (erreur de reprojection, inclinaison du tag) |
+| `handeye_tf_publisher` | Publie `fp3_link0 → camera_link` depuis un `.calib`, configs de tags, `watch_calibration_convergence.py` |
+| `calib_eye_in_hand` | Calibration de la D405 montée au poignet (voir son `CLAUDE.md`) |
+| `calib_bridge` | Dérive la calibration D455 depuis celle de la D405 (voir son `CLAUDE.md`) |
+| `fp3_apriltag_demo` | Amène `fp3_hand_tcp` sur la pose du tag (pas de grasp) — le bras bouge seul (voir son `CLAUDE.md`) |
+| `src/external/` (git-ignoré) | `apriltag_ros`, `easy_handeye2`, `easy_handeye2_msgs` — clonés par `scripts/install_dependencies.sh` aux versions de `calib.repos` |
 
-**Doublons volontaires avec `franka_demo_ws`** : `handeye_tf_publisher`, `fp3_apriltag_demo`, `easy_handeye2(_msgs)`, `apriltag_ros` existent aussi dans `franka_demo_ws/src/` — décision explicite de l'utilisateur ("ne touche pas à ce ws, juste créer un nouveau") plutôt que déplacer/partager. Les deux copies peuvent diverger avec le temps ; pas de mécanisme de synchronisation automatique.
+**Doublon restant avec `franka_demo_ws`** : `handeye_tf_publisher` existe aussi là-bas dans une version légèrement différente (à fusionner).
 
-## Dépendances externes — PAS dupliquées, sourcées à côté
+## Dépendances
 
-`fp3_moveit_server` (move_group, `pick_place_node`, `command_router_node`) et `franka_demo_interfaces` (action `MtcPick`, utilisée par `fp3_apriltag_demo`) restent uniquement dans `franka_demo_ws`. `franka_bringup`/`franka_description` restent dans `franka_ros2_ws`. Aucune dépendance circulaire au build (colcon ne vérifie pas les `exec_depend` à la compilation, seulement au lancement) — juste une contrainte de sourcing :
+`fp3_moveit_server` + `franka_fp3_moveit_config` (pile MoveIt, optionnelle via `start_arm_stack`) viennent de `franka_demo_ws` ; `franka_bringup`/`franka_description` viennent de `franka_ros2_ws` (Franka, non versionné, cf. `../README.md`). Ordre de sourcing obligatoire :
 
 ```bash
 source /opt/ros/jazzy/setup.bash
@@ -25,13 +29,13 @@ source $FP3_ROOT/franka_demo_ws/install/setup.bash
 source $FP3_ROOT/calib_ws/install/setup.bash
 ```
 
-Cet ordre (les 3 premiers avant `calib_ws`) fait aussi que la copie de `handeye_tf_publisher`/`fp3_apriltag_demo` de `calib_ws` **prend le dessus** sur celle de `franka_demo_ws` (avertissement `colcon build` attendu à ce sujet, sans conséquence).
+Installation des dépendances externes : `scripts/install_dependencies.sh` (cf. `README.md`, section 2).
 
 ## Build
 
 ```bash
 cd $FP3_ROOT/calib_ws
-colcon build
+colcon build --symlink-install
 ```
 
 ## Lancer une session de calibration complète
@@ -65,7 +69,7 @@ ros2 launch fp3_apriltag_demo apriltag_move_once.launch.py \
   calibration_name:=<nom_du_.calib>
 ```
 
-Grasp+lift réel sur la pose calculée du tag — `CALIBRATION CHECK PASSED`/`FAILED` dans les logs. Cf. `fp3_apriltag_demo/CLAUDE.md` pour le détail (`force_gripper_down`, ce que le test valide vraiment).
+Amène `fp3_hand_tcp` sur la pose calculée du tag (pince ouverte, aucun grasp) ; comparer ensuite avec `ros2 run tf2_ros tf2_echo tag36h11:0 fp3_hand_tcp` (translation ≈ 0). **Le bras bouge seul.** Cf. `fp3_apriltag_demo/CLAUDE.md` pour le détail.
 
 ## Historique de diagnostic (ce qui a déjà été écarté)
 

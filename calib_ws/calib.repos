@@ -1,0 +1,12 @@
+# External sources cloned into src/external/ by scripts/install_dependencies.sh
+# (or manually: vcs import src < calib.repos). Versions are pinned to the exact
+# commits this workspace was developed and tested against.
+repositories:
+  external/apriltag_ros:
+    type: git
+    url: https://github.com/christianrauch/apriltag_ros.git
+    version: beffb4c73bdd04fb6347d612e3306f75bb06c7e7   # 3.4.0-2
+  external/easy_handeye2:
+    type: git
+    url: https://github.com/marcoesposito1988/easy_handeye2.git
+    version: 0ad1ddddbbc9a3cc7d3695ad53d04f1a5b82e598   # provides easy_handeye2 + easy_handeye2_msgs

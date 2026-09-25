@@ -1,5 +1,6 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -28,6 +29,7 @@ def generate_launch_description():
     tracking_marker_frame = LaunchConfiguration('tracking_marker_frame')
     calibration_name = LaunchConfiguration('calibration_name')
     apriltag_params_file = LaunchConfiguration('apriltag_params_file')
+    start_arm_stack = LaunchConfiguration('start_arm_stack')
 
     moveit_server_bringup = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -38,6 +40,7 @@ def generate_launch_description():
             'robot_ip': robot_ip,
             'use_rviz': use_rviz,
         }.items(),
+        condition=IfCondition(start_arm_stack),
     )
 
     # scripts/launch_realsense_with_retry.sh (own copy in this package, cf.
@@ -135,6 +138,14 @@ def generate_launch_description():
             default_value=PathJoinSubstitution(
                 [FindPackageShare('handeye_tf_publisher'), 'tags', '36h11_0_0.04.yaml']),
             description='apriltag_node params file (family/size/detector settings)'),
+        DeclareLaunchArgument(
+            'start_arm_stack', default_value='true',
+            description=(
+                'Start fp3_moveit_server (MoveIt + ros2_control, the arm is then held '
+                'stiff by fp3_arm_controller). Set false to hand-guide the arm: start '
+                'franka_bringup\'s gravity_compensation_example_controller yourself '
+                'instead (only ONE process may hold the robot connection), which also '
+                'provides robot_state_publisher / joint states.')),
         DeclareLaunchArgument(
             'target_tag_id', default_value='0',
             description='Tag id calib_sample_guard watches (must match the calibration tag)'),
