@@ -28,7 +28,10 @@ vcs import "$WS/src" < "$WS/src/dependency.repos"
 
 echo "==> rosdep (asks for sudo only if some package is missing)"
 rosdep update >/dev/null
-rosdep install --from-paths "$WS/src" --ignore-src --rosdistro "$ROS_DISTRO" -y -r
+if ! rosdep install --from-paths "$WS/src" --ignore-src --rosdistro "$ROS_DISTRO" -y -r; then
+  echo "WARNING: some rosdep dependencies could not be installed (sudo password needed? e.g. python3-graphviz)." >&2
+  echo "         Install them (sudo apt install <package>) if the build below fails; python3-graphviz is only used for docs." >&2
+fi
 
 if [ "${1:-}" = "--no-build" ]; then echo "Skipping build."; exit 0; fi
 echo "==> Building (this takes several minutes)"
