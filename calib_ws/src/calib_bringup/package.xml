@@ -17,9 +17,7 @@
   <exec_depend>apriltag_ros</exec_depend>
   <exec_depend>easy_handeye2</exec_depend>
   <exec_depend>handeye_tf_publisher</exec_depend>
-  <exec_depend>calib_rigidity_test</exec_depend>
   <exec_depend>calib_sample_guard</exec_depend>
-  <exec_depend>calib_axis_test</exec_depend>
   <exec_depend>fp3_moveit_server</exec_depend>
 
   <test_depend>ament_copyright</test_depend>

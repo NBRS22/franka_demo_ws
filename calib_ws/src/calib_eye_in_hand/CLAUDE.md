@@ -48,7 +48,7 @@ l'effecteur devant une caméra fixe ; ici la caméra bouge avec l'effecteur deva
   Plan retenu : ce node s'abonnera directement aux `/detections` bruts de chaque caméra
   (`apriltag_msgs/AprilTagDetectionArray`) + `camera_info`, fera lui-même le solvePnP/composition TF
   par caméra (réutiliser `estimate_tag_pose_camera_frame`/`_rotation_to_quat` de
-  `calib_axis_test/axis_test_node.py`) — jamais dépendre du TF broadcast natif d'`apriltag_node` pour
+  `calib_axis_test/axis_test_node.py`, package depuis supprimé de ce workspace) — jamais dépendre du TF broadcast natif d'`apriltag_node` pour
   la comparaison finale (celui-ci reste utile, seul, pendant la calibration eye-in-hand elle-même).
 - Il faudra alors namespacer le D405 (`camera_name:=d405 camera_namespace:=d405`, `serial_no` requis
   pour chaque appareil) puisque les deux caméras seront branchées en même temps.

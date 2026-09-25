@@ -12,9 +12,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', [
             'launch/calib_bringup.launch.py',
-            'launch/rigidity_check.launch.py',
             'launch/evaluate_calibration.launch.py',
-            'launch/axis_check.launch.py',
         ]),
         ('share/' + package_name + '/scripts', ['scripts/launch_realsense_with_retry.sh']),
     ],

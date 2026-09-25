@@ -6,10 +6,8 @@ Workspace ROS2 (Jazzy) dédié à la calibration eye-on-base `fp3_link0 → came
 
 | Package | Rôle |
 |---|---|
-| `calib_bringup` | Launch racine — une commande lance tout (caméra, apriltag, easy_handeye2, bras réel, tour de poses) |
+| `calib_bringup` | Launch racine — une commande lance tout (caméra, apriltag, easy_handeye2, bras réel) |
 | `handeye_tf_publisher` | Publie `fp3_link0 → camera_link` depuis un `.calib` easy_handeye2, + outil `watch_calibration_convergence.py` |
-| `calib_rigidity_test` | Diagnostic : le tag/cube est-il rigide sur `fp3_hand` (pas de glissement) ? |
-| `calib_intrinsics_test` | Diagnostic intrinsèques caméra — 2 méthodes : `intrinsics_test` (déplacement du bras connu par FK) et `grid_intrinsics_check` (statique, sans bras, feuille de 9 AprilTags à distances connues) |
 | `fp3_apriltag_demo` | Vérification physique par grasp+lift réel sur la pose calculée du tag |
 | `easy_handeye2` / `easy_handeye2_msgs` | Clone externe — solveur de calibration (Tsai/Park/Horaud/Andreff/Daniilidis) |
 | `apriltag_ros` | Clone externe — détection AprilTag |
@@ -59,22 +57,6 @@ ros2 launch handeye_tf_publisher publish.launch.py \
   calibration_name:=<nom_du_.calib>
 ```
 
-## Diagnostics
-
-**Statique, sans bras** (juste une feuille imprimée de 9 AprilTags 36h11 ids 0-8, 4cm chacun, grille 3x3, lus gauche→droite haut→bas — `id = row*3 + col` —, espacement centre-à-centre 6cm en X et Y) :
-```bash
-ros2 launch calib_intrinsics_test intrinsics_grid_check.launch.py
-```
-Lance sa propre caméra + `apriltag_node` (config dédiée `tags/36h11_grid_3x3_0.04.yaml`, tous les ids 0-8) — autonome, rien d'autre à lancer avant. Calcule les 36 distances par paire de tags (repère caméra, `solvePnP`, aucune calibration main-œil impliquée), compare à la distance attendue selon la position dans la grille, et **sépare le résultat par direction** (horizontal / vertical / diagonal) plutôt qu'une moyenne globale — un biais Fx≠Fy peut s'annuler dans une moyenne globale mais pas si on regarde chaque axe séparément. Rapporte aussi un facteur d'échelle global (régression measured/expected).
-
-**Avec bras** (`calib_bringup` ou manuellement) :
-```bash
-ros2 run calib_rigidity_test rigidity_test      # le tag glisse-t-il dans la pince ?
-ros2 run calib_intrinsics_test intrinsics_test  # déplacement connu du bras vs mesure caméra
-```
-
-Les trois comparent contre une vérité terrain indépendante (géométrie connue de la feuille, ou cinématique directe du bras) — **aucun ne dépend de la calibration `fp3_link0 → camera_link` en cours de diagnostic**, exprès, pour ne pas fausser le résultat en présupposant ce qu'on cherche à vérifier.
-
 ## Vérification physique finale
 
 ```bash
@@ -87,7 +69,7 @@ Grasp+lift réel sur la pose calculée du tag — `CALIBRATION CHECK PASSED`/`FA
 
 ## Historique de diagnostic (ce qui a déjà été écarté)
 
-Sur ce montage, dans l'ordre testé :
+Sur ce montage, dans l'ordre testé (les packages de diagnostic `calib_intrinsics_test` et `calib_rigidity_test` ont depuis été supprimés de ce workspace, seules leurs conclusions restent) :
 1. **Intrinsèques caméra** : écartées (`calib_intrinsics_test` — écart de 1.75% sur un déplacement de 120mm, très inférieur à ce qu'il faudrait pour expliquer un biais de pick de plusieurs cm)
 2. **Rigidité du montage tag/cube** : écartée (`calib_rigidity_test` — dérive du tag ≈ dérive propre de la main après retour en espace articulaire à la config de départ, pas de résidu inexpliqué)
 3. **Solveur AX=XB "à une inconnue"** : le montage eye-on-base actuel (tag sur `fp3_hand`, caméra fixe) résout déjà l'offset gripper→tag comme sa propre inconnue — vérifié par dérivation mathématique directe et par lecture du code source `easy_handeye2` (`handeye_sampler.py`, le "trick" d'inversion pour `eye_on_base` est correct, pas un bug)
@@ -95,4 +77,4 @@ Sur ce montage, dans l'ordre testé :
 
 ## Non testé
 
-Ce workspace vient d'être créé — `calib_bringup.launch.py` n'a jamais été lancé de bout en bout (seule sa construction a été vérifiée, `--show-args`). Les packages `calib_rigidity_test`/`calib_intrinsics_test` sont des copies fonctionnellement identiques de scripts déjà validés en conditions réelles sur ce robot (dans `franka_demo_ws`/scratchpad), mais pas encore ré-exécutés depuis leur nouvel emplacement dans `calib_ws`.
+Ce workspace vient d'être créé — `calib_bringup.launch.py` n'a jamais été lancé de bout en bout (seule sa construction a été vérifiée, `--show-args`).
