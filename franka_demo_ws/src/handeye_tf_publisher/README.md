@@ -94,7 +94,7 @@ Naming convention: `<family>_<ID>_<size>.yaml` — e.g. `36h11_0_0.04.yaml`
 
 ```bash
 cat > $FP3_ROOT/franka_demo_ws/src/handeye_tf_publisher/tags/<family>_<ID>_<size>.yaml << 'EOF'
-apriltag:
+"/**":                # matches the apriltag node whatever its name/namespace
   ros__parameters:
     family: <family>    # e.g. 36h11, 25h9, Standard41h12
     size: 0.XX          # actual black square side in meters

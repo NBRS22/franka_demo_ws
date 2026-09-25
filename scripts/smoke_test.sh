@@ -38,18 +38,20 @@ run_piece() {
   local pgid=$!
   sleep "$wait_s"
   cp "$log" "$snap"
-  local clean; clean=$(sed -E 's/\x1b\[[0-9;]*m//g' "$snap")
+  local clean="$snap.clean" died
+  sed -E 's/\x1b\[[0-9;]*m//g' "$snap" > "$clean"          # files, not pipes: logs can be tens of MB
+  died=$(grep -E "process has died" "$clean" || true)
   IFS='|' read -ra req <<< "$required"
   for r in "${req[@]}"; do
     [ -z "$r" ] && continue
-    echo "$clean" | grep -qE "$r" || { status="FAIL"; notes+="missing: '$r'; "; }
+    grep -qE "$r" "$clean" || { status="FAIL"; notes+="missing: '$r'; "; }
   done
   IFS='|' read -ra nd <<< "$nodie"
   for e in "${nd[@]}"; do
     [ -z "$e" ] && continue
-    if echo "$clean" | grep -E "process has died" | grep -q "$e"; then status="FAIL"; notes+="'$e' died; "; fi
+    if grep -q "$e" <<< "$died"; then status="FAIL"; notes+="'$e' died; "; fi
   done
-  if echo "$clean" | grep -E "process has died" | grep -q "realsense2_camera_node\|realsense-"; then notes+="(camera not available: warning only) "; fi
+  if grep -q "realsense2_camera_node\|realsense-" <<< "$died"; then notes+="(camera not available: warning only) "; fi
   kill -INT -- "-$pgid" 2>/dev/null
   for _ in $(seq 1 40); do kill -0 -- "-$pgid" 2>/dev/null || break; sleep 1; done
   if kill -0 -- "-$pgid" 2>/dev/null; then kill -TERM -- "-$pgid" 2>/dev/null; sleep 3; kill -KILL -- "-$pgid" 2>/dev/null; notes+="(needed forced stop) "; fi
@@ -86,7 +88,7 @@ for p in "${PIECES[@]}"; do
       run_piece eye_in_hand 30 "apriltag_node.*process started|handeye_server.*process started" "handeye_server" -- \
         ros2 launch calib_eye_in_hand calibrate_eye_in_hand.launch.py use_fake_hardware:=true start_arm_stack:=false ;;
     calib_bridge)
-      run_piece calib_bridge 35 "apriltag_node.*process started" "" -- \
+      run_piece calib_bridge 35 "apriltag_node.*process started|bridge_calibration_node.*process started" "apriltag_node|bridge_calibration_node" -- \
         ros2 launch calib_bridge calib_bridge.launch.py use_fake_hardware:=true ;;
     apriltag_demo)
       run_piece apriltag_demo 40 "apriltag_node.*process started|apriltag_move_once_node.*process started|pick_place_node ready" "pick_place_node|move_group" -- \
