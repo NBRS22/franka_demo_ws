@@ -40,5 +40,5 @@ fi
 if [ "${1:-}" = "--no-build" ]; then echo "Skipping build."; exit 0; fi
 echo "==> Building (this takes several minutes)"
 cd "$WS"
-colcon build --symlink-install
+colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF
 echo "Done. Source it with: source $WS/install/setup.bash"

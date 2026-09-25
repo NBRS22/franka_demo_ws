@@ -77,7 +77,7 @@ scripts/install_franka_ros2.sh              # add --no-build to only fetch the s
 ```
 What it does, if you prefer manually: `git clone -b jazzy https://github.com/frankarobotics/franka_ros2.git franka_ros2_ws/src`,
 `git -C franka_ros2_ws/src checkout 73a1501d76efa2bc4bf09cb2af9c2b72c2c642da`, `vcs import franka_ros2_ws/src < franka_ros2_ws/src/dependency.repos`,
-`rosdep install --from-paths franka_ros2_ws/src --ignore-src -y`, `colcon build --symlink-install` in `franka_ros2_ws`.
+`rosdep install --from-paths franka_ros2_ws/src --ignore-src -y`, `colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF` in `franka_ros2_ws`.
 
 Nothing of this project is patched into `franka_ros2`: the FP3 MoveIt configuration (`franka_fp3_moveit_config`) and the FP3
 robot launch configs (`robot_configs/fp3.config.yaml`) live in `franka_demo_ws/src/franka_fp3_moveit_config`.
