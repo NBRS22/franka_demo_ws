@@ -1,5 +1,6 @@
 import os
 import shlex
+import shutil
 
 from launch import LaunchDescription
 from launch.actions import (
@@ -59,6 +60,20 @@ REALSENSE_COLOR_PROFILE = '1280x720x30'
 REALSENSE_DEPTH_PROFILE = '1280x720x30'
 
 
+def _find_conda():
+    # conda does not have to be on PATH (and should not be first on it: its python3 would
+    # shadow the system one used by the ROS nodes). Look for it in the usual places.
+    home = os.path.expanduser('~')
+    candidates = [os.environ.get('CONDA_EXE'), shutil.which('conda')]
+    candidates += [os.path.join(home, d, 'bin', 'conda')
+                   for d in ('miniconda3', 'anaconda3', 'miniforge3', 'mambaforge')]
+    candidates += ['/opt/conda/bin/conda']
+    for c in candidates:
+        if c and os.path.isfile(c):
+            return c
+    raise RuntimeError('conda not found: install it, or set CONDA_EXE to its executable.')
+
+
 def _conda_run_cmd(env_name, workdir, *command):
     # `conda run` does not forward SIGINT/SIGTERM to its child, so stopping the
     # launch left the model servers orphaned (GPU memory held, ports still bound).
@@ -67,7 +82,7 @@ def _conda_run_cmd(env_name, workdir, *command):
     inner = ' '.join(shlex.quote(a) for a in command)
     script = (
         f'cd {shlex.quote(workdir)} && '
-        'eval "$(conda shell.bash hook)" && '
+        f'eval "$({shlex.quote(_find_conda())} shell.bash hook)" && '
         f'conda activate {shlex.quote(env_name)} && '
         f'exec {inner}'
     )

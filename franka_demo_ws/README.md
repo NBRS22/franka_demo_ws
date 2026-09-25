@@ -95,7 +95,7 @@ them with the ROS 2 system Python. Each directory has a `README_FP3.md` with the
 | `GraspGen/` | `GraspGen` | [`GraspGen/README_FP3.md`](../GraspGen/README_FP3.md): env (Python 3.10, torch 2.1 cu121), `./install_pointnet.sh`, checkpoints (about 8 GB) cloned into `GraspGen/GraspGenModels/` |
 | `ER/` | `ER` | Simulator only, no ROS: `opencv-python==4.9.0.80`, `numpy==1.26.4`, `pyzmq`. Do not source ROS in this env. |
 
-`conda` must be on the `PATH` of the terminal that runs `ros2 launch` (a terminal where `conda activate` works).
+`conda` does not need to be on the `PATH`: the launch file finds it (`$CONDA_EXE`, `~/miniconda3`, `~/anaconda3`, `~/miniforge3`, `/opt/conda`). Run `ros2 launch` from a shell where the conda **`base` environment is not activated** — its `python3` would shadow the system one used by the ROS nodes.
 The launch file finds `SAM3/` and `GraspGen/` by walking up from its own location, or from `$FP3_ROOT` if set.
 
 ### 2.5 Build
