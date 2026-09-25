@@ -1,0 +1,36 @@
+export const state = {
+  selectedModel: null,
+  selectedEndpointType: 'gemini_live_api',
+  selectedAudioEnabled: true,
+  customBaseModality: 'TEXT',
+  selectedAgentName: 'human',
+  videoSource: 'computer',
+  toolCallCounter: 0,
+  lastAckRow: null,
+  ackCount: 0,
+  currentGeminiMessageDiv: null,
+  currentUserMessageDiv: null,
+  currentThinkingContentDiv: null,
+  robotState: 'idle',
+  robotStateText: '',
+  // latency
+  querySendTime: null,
+  ttftRecorded: false,
+  ttfcRecorded: false,
+  sessionStartTime: null,
+  sessionTimerInterval: null,
+  audioFlushPending: false,
+  // overlay
+  overlayState: { sam3: true, graspPose: true, placeLocation: true, geminiPoint: true, pipeline: true },
+  overlayData: { sam3Mask: null, graspPose: null, pickCoords: null, placeCoords: null, livePoints: null },
+  currentPipelinePhase: null,
+  donePipelinePhases: [],
+  // latency histories
+  ttftHistory: [], ttfcHistory: [], ttltHistory: [],
+  srvClientHistory: [], srvServerHistory: [], srvPrefillHistory: [],
+  srvDecodeHistory: [], srvTtftHistory: [], srvClientTtftHistory: [],
+  MAX_HISTORY: 50,
+  // live objects — set in app.js after instantiation
+  geminiClient: null,
+  mediaHandler: null,
+};

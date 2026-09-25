@@ -1,3 +1,4 @@
+// Migrated to modules/ — see ui/modules/app.js
 // --- Main Application Logic (Proactive Agent) ---
 let localStorage = window.localStorage;
 
@@ -969,7 +970,12 @@ function applyVideoSource(source, { notifyServer = true } = {}) {
               geminiClient.sendImage(base64Data);
             }
           })
-        .catch(e => console.warn('Camera start failed:', e));
+        .catch(e => {
+          console.error('Camera start failed:', e);
+          videoPlaceholder.textContent = '⚠️ Camera blocked — allow access in browser';
+          videoPlaceholder.classList.remove('hidden');
+          videoPreview.classList.add('hidden');
+        });
     }
   } else {
     // Robot / Atari mode: camera poller → Gemini
@@ -1082,7 +1088,6 @@ function handleJsonMessage(msg) {
     return;
   }
   if (msg.type === 'video_source') {
-    // Server notifies us of its camera source (e.g. RealSense active).
     applyVideoSource(msg.source, { notifyServer: false });
     return;
   }

@@ -1,74 +1,153 @@
-# Gemini Robotics ER - Live API Examples
+# Gemini Robotics ER 2.0 — Robot Orchestrator
 
-A repository of examples of connecting Gemini Robotics ER with physical robot embodiments using Live API for task orchestration, voice interactions, etc. The embodiments include Boston Dynamics Spot, Tinybot (a custom stationary robot hardware), and human operators.
-
----
-
-## Repository Structure & Packages
-
-| Package | Purpose & Features | Environment / Stack | Link |
-| :--- | :--- | :--- | :--- |
-| **`agent`** | **Physical Agent Server**: Core agent server interfacing with the Gemini Live API over WebSockets for real-time audio/video interaction, tool dispatch, and robot control. | Python 3.10+ (FastAPI, WebSockets, `google-genai`, `uv`) | [`./agent`](./agent/README.md) |
-| **`spot`** | **Boston Dynamics Spot SDK Integration**: Suite of CLI tools, REST APIs, object detection/manipulation pipelines, and autonomous delivery applications for Spot. | Python (`bosdyn-client`, `google-genai`), Node.js/React (`apps/hydration`) | [`./spot`](./spot/README.md) |
-| **`tinybot`** | **Compact Robot Controller**: Lightweight server providing camera video streaming and basic REST API controls for compact or custom robot hardware. | Python (FastAPI, OpenCV) | [`./tinybot`](./tinybot) |
+An application that connects **Google Gemini Robotics ER 2.0** to physical robot hardware via the Gemini Live API. It supports real-time audio/video interaction, tool dispatch, and robot control for multiple embodiments.
 
 ---
 
-## Detailed Package Overview
+## Repository structure
 
-### 1. [Agent Server (`./agent`)](./agent/README.md)
-
-The `agent` directory contains the main orchestration server connecting multimodal AI models to physical hardware.
-
-* **Gemini Live API Integration**: Handles bi-directional audio/video streaming with Gemini Live API using WebSockets.
-* **Embodiment Architecture**: Modular client abstractions (`agent/embodiment/`) to control different physical targets (`spot`, `tinybot`, `human`).
-* **Web UI & Camera Poller**: Includes a built-in web interface and camera polling service (`camera_poller.py`) for real-time visual feeds.
-* **Quickstart**:
-  ```bash
-  cd agent
-  UV_CACHE_DIR=.uv-cache uv sync
-  UV_CACHE_DIR=.uv-cache uv run python server.py --port 8000
-  ```
+| Package | Description | Doc |
+|---------|-------------|-----|
+| [`agent/`](./agent/README.md) | Core orchestration server — Gemini Live API, WebSocket, browser UI | [README](./agent/README.md) |
+| [`franka/`](./franka/README.md) | Franka arm backend — HTTP → ZMQ bridge, camera stream | [README](./franka/README.md) |
+| [`franka_vla/`](./franka_vla/) | Franka VLA backend — natural language → motor commands via VLA model | — |
+| [`spot/`](./spot/) | Boston Dynamics Spot SDK integration | — |
 
 ---
 
-### 2. [Spot Applications & SDK (`./spot`)](./spot/README.md)
+## Architecture overview
 
-The `spot` directory contains Boston Dynamics Spot integrations powered by `bosdyn-client` and Gemini vision tools.
-
-* **Navigation App ([`apps/navigation`](./spot/apps/navigation))**: Manage GraphNav waypoints, register named locations, and command Spot to navigate autonomously via CLI.
-* **Manipulation App ([`apps/manipulation`](./spot/apps/manipulation))**: Arm deployment, Gemini-based 2D/3D object detection, force-change detection, and picking.
-* **FastAPI Server ([`apps/api`](./spot/apps/api))**: Exposes HTTP REST endpoints for Spot movement, leases, arm control, and waypoints (`http://localhost:8000/docs`).
-* **Hydration Delivery Service ([`apps/hydration`](./spot/apps/hydration))**: Full-stack Node/React app and order worker that commands Spot to deliver drinks.
-* **Quickstart**:
-  ```bash
-  cd spot
-  UV_CACHE_DIR=.uv-cache uv sync
-  UV_CACHE_DIR=.uv-cache uv run uvicorn apps.api.main:app --host 127.0.0.1 --port 8000
-  ```
-
----
-
-### 3. [Tinybot Hardware Controller (`./tinybot`)](./tinybot)
-
-The `tinybot` directory provides lightweight camera streaming and basic hardware control endpoints for smaller physical robot hardware.
-
-* **Camera Streamer ([`src/robot/camera_streamer.py`](./tinybot/src/robot/camera_streamer.py))**: Captures and streams live camera feeds for vision processing.
-* **Robot REST API ([`src/robot/robot_api.py`](./tinybot/src/robot/robot_api.py))**: Exposes REST endpoints for low-level movement execution.
-* **Quickstart**:
-  ```bash
-  cd tinybot
-  ./setup.sh
-  ./run_robot.sh
-  ```
+```
+Browser
+  │  WebSocket
+  ▼
+Agent Server  ──────────────────────────────►  Gemini Live API
+(agent/, port 8000)                          (audio/video stream)
+  │
+  │  HTTP (REST)
+  ├──────────────────►  Franka Backend      (franka/,     port 8888)
+  │                           │  ZMQ
+  │                           ├──► Robot Controller
+  │                           └──► Camera Publisher
+  │
+  └──────────────────►  Franka VLA Backend  (franka_vla/, port 8889)
+```
 
 ---
 
-## Environment Setup
+## Running the Franka pipeline
 
-All Python subpackages use [`uv`](https://github.com/astral-sh/uv) for fast, deterministic dependency management. To keep virtual environments isolated and clean:
+The Franka pipeline requires **two servers running simultaneously**: the Franka backend and the Agent server.
+
+### Prerequisites
+
+- Python 3.10+
+- [`uv`](https://github.com/astral-sh/uv)
+- A valid Gemini API key → [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)
+- A running ZMQ robot controller + ZMQ camera publisher (Franka SDK / ROS side)
+
+---
+
+### Step 1 — Start the Franka backend
 
 ```bash
-# Sync dependencies within any subfolder using local cache:
-UV_CACHE_DIR=.uv-cache uv sync
+cd franka
+cp .config.example .config   # first time only
+uv sync                       # first time only
+uv run python main.py
 ```
+
+Verify it is up:
+```bash
+curl http://localhost:8888/health
+# Expected: {"status": "ok", "camera": "zmq", "has_frame": true}
+```
+
+> The backend binds on port **8888** by default. Change `BACKEND_PORT` in `franka/.config` if needed.
+
+---
+
+### Step 2 — Start the Agent server
+
+In a **second terminal**:
+
+```bash
+cd agent
+cp .env.example .env          # first time only
+# Edit .env and set GEMINI_API_KEY = "your_key_here"
+uv sync                       # first time only
+uv run python main.py
+```
+
+Make sure `ROBOT_URL` in `agent/.env` points to the Franka backend:
+
+```dotenv
+ROBOT_URL = "http://localhost:8888"
+```
+
+---
+
+### Step 3 — Open the UI
+
+Go to **http://localhost:8000** in your browser.
+
+1. In the agent selector (top-left), choose **Franka**.
+2. Click **Connect** — the session starts and the camera feed appears.
+3. Talk or type to control the arm.
+
+---
+
+### Franka VLA variant
+
+To use the VLA (Vision-Language-Action) variant instead:
+
+```bash
+# Terminal 1 — start the VLA backend (port 8889)
+cd franka_vla
+uv sync
+uv run python main.py
+
+# Terminal 2 — start the Agent server pointing to the VLA backend
+cd agent
+ROBOT_URL="http://localhost:8889" uv run python main.py
+```
+
+Then select **Franka VLA** in the agent dropdown. Instead of pixel-coordinate pick/place, you give natural language instructions (e.g. *"pick up the red cube"*).
+
+---
+
+## Quick start — Human mode (no robot)
+
+To test the UI and Gemini connection without any physical robot:
+
+```bash
+cd agent
+cp .env.example .env
+# set GEMINI_API_KEY in .env
+uv sync
+uv run python main.py
+```
+
+Open **http://localhost:8000**, keep the agent set to **Human**, and click **Connect**.  
+Your browser webcam and microphone are used as the sensor input.
+
+---
+
+## Environment & configuration
+
+Each package has its own configuration file:
+
+| Package | Config file | Template |
+|---------|------------|---------|
+| `agent/` | `agent/.env` | `agent/.env.example` |
+| `franka/` | `franka/.config` | `franka/.config.example` |
+| `franka_vla/` | `franka_vla/.config` | `franka_vla/.config.example` |
+
+All secrets (API keys) are loaded from these local files and are excluded from git via `.gitignore`.
+
+---
+
+## Further reading
+
+- [Agent Server — setup, API reference, adding a new embodiment](./agent/README.md)
+- [Franka Backend — ZMQ configuration, REST API](./franka/README.md)

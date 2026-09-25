@@ -7,7 +7,7 @@ from session import config as session_config
 
 @dataclasses.dataclass
 class ServerConfig:
-  """Server-level configuration from CLI flags."""
+  """Server-level configuration (loaded from .env via config.py)."""
 
   model: str = "models/gemini-robotics-er-2-streaming-preview"
   robot_url: str = "http://localhost:8888"

@@ -1,0 +1,18 @@
+# Environment — never commit secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+
+# Logs & dumps
+*.log
+dump_video/
+
+# IDE
+.vscode/
+.idea/

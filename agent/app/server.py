@@ -456,12 +456,6 @@ async def websocket_endpoint(
     if hasattr(current_embodiment, "set_ui_callback"):
       current_embodiment.set_ui_callback(websocket.send_json)
 
-    if getattr(current_embodiment, "poller", None) is not None:
-      try:
-        await websocket.send_json({"type": "video_source", "source": "realsense"})
-      except Exception:  # pylint: disable=broad-except
-        pass
-
     receive_task = asyncio.create_task(receive_from_client())
     session_task = asyncio.create_task(run_session())
     done, pending = await asyncio.wait(
