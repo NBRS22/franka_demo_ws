@@ -202,7 +202,7 @@ ZMQ sockets have no authentication: use a closed lab network only.
 ## 7. Troubleshooting
 
 - **The launch shuts down right after start**: a server did not become healthy in 180 s (GPU busy, model not downloaded,
-  `conda` not on `PATH`). Run the failing server by hand (section 3) to see its error.
+  conda not found). Run the failing server by hand (section 3) to see its error.
 - **`Cannot locate the FP3 repo root`**: `SAM3/` and `GraspGen/` are not next to the workspaces; set `FP3_ROOT`.
 - **`Controller is not running` / `communication_constraints_violation`**: network real-time issue on the robot link,
   see `franka_reflex.md`. Relaunch the arm stack afterwards.
