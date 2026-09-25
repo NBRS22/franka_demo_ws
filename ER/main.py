@@ -7,7 +7,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--label", default="cube", help="Label de l'objet")
     parser.add_argument("--task", choices=["pick", "place"], default="pick", help="Tâche initiale (bascule avec 't')")
-    parser.add_argument("--robot-ip", default="172.22.62.72", help="IP du robot")
+    parser.add_argument("--robot-ip", default="127.0.0.1", help="Hote qui execute camera_bridge/command_bridge")
     parser.add_argument("--camera-port", type=int, default=5555, help="Port du flux caméra")
     parser.add_argument("--bridge-port", type=int, default=5556, help="Port du bridge")
     args = parser.parse_args()

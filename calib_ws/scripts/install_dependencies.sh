@@ -13,7 +13,8 @@ if [ -z "${ROS_DISTRO:-}" ]; then
 fi
 
 echo "==> 1/3 External sources (pinned, see calib.repos)"
-sudo apt-get install -y python3-vcstool python3-rosdep >/dev/null
+command -v vcs >/dev/null || sudo apt-get install -y python3-vcstool
+command -v rosdep >/dev/null || sudo apt-get install -y python3-rosdep
 vcs import "$WS/src" < "$WS/calib.repos"
 
 echo "==> 2/3 ROS / system dependencies (rosdep)"
@@ -23,7 +24,7 @@ echo "==> 2/3 ROS / system dependencies (rosdep)"
 rosdep update
 rosdep install --from-paths "$WS/src" --ignore-src -r -y \
   --skip-keys "fp3_moveit_server franka_demo_interfaces python-transforms3d-pip"
-sudo apt-get install -y python3-transforms3d
+python3 -c "import transforms3d" 2>/dev/null || sudo apt-get install -y python3-transforms3d
 
 echo "==> 3/3 RealSense udev rules (needed for the D455/D405 to open without root)"
 if ! ls /etc/udev/rules.d 2>/dev/null | grep -qi realsense; then

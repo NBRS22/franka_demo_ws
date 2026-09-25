@@ -70,7 +70,7 @@ export FP3_ROOT=~/Documents/FP3        # wherever you cloned the repository
 
 ### 2.2 Franka ROS 2 (not in this repository)
 
-Clone and build `franka_ros2_ws` first: see the [root README](../README.md#franka-ros-2-not-included).
+Clone and build `franka_ros2_ws` first: `scripts/install_franka_ros2.sh` at the repository root ([root README](../README.md#3-franka-ros-2-external)).
 
 ### 2.3 System packages
 
