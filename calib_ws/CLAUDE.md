@@ -8,7 +8,6 @@ Workspace ROS2 (Jazzy) dédié à la calibration eye-on-base `fp3_link0 → came
 |---|---|
 | `calib_bringup` | Launch racine — une commande lance tout (caméra, apriltag, easy_handeye2, bras réel, tour de poses) |
 | `handeye_tf_publisher` | Publie `fp3_link0 → camera_link` depuis un `.calib` easy_handeye2, + outil `watch_calibration_convergence.py` |
-| `calib_pose_tour` | Fait parcourir au bras 20 poses (proches de la caméra, orientations variées) pour la prise d'échantillons |
 | `calib_rigidity_test` | Diagnostic : le tag/cube est-il rigide sur `fp3_hand` (pas de glissement) ? |
 | `calib_intrinsics_test` | Diagnostic intrinsèques caméra — 2 méthodes : `intrinsics_test` (déplacement du bras connu par FK) et `grid_intrinsics_check` (statique, sans bras, feuille de 9 AprilTags à distances connues) |
 | `fp3_apriltag_demo` | Vérification physique par grasp+lift réel sur la pose calculée du tag |
@@ -44,14 +43,14 @@ ros2 launch calib_bringup calib_bringup.launch.py \
   use_fake_hardware:=false robot_ip:=192.168.1.1
 ```
 
-Démarre : `fp3_moveit_server/bringup.launch.py` (bras réel), la caméra (`scripts/launch_realsense_with_retry.sh` — `initial_reset:=true` + relance auto si la course de ré-énumération USB fait planter la première tentative, cf. historique dans `franka_demo_ws/src/franka_demo_bringup/CLAUDE.md`), `apriltag_node`, `easy_handeye2 calibrate.launch.py` (interface `rqt` de prise d'échantillons), puis après un délai de 15s (le temps que le reste démarre), `calib_pose_tour` qui fait parcourir au bras 20 poses en pause de 4s chacune pour la prise d'échantillons manuelle.
+Démarre : `fp3_moveit_server/bringup.launch.py` (bras réel), la caméra (`scripts/launch_realsense_with_retry.sh` — `initial_reset:=true` + relance auto si la course de ré-énumération USB fait planter la première tentative, cf. historique dans `franka_demo_ws/src/franka_demo_bringup/CLAUDE.md`), `apriltag_node` et `easy_handeye2 calibrate.launch.py` (interface `rqt` de prise d'échantillons).
+
+**Le bras ne bouge jamais tout seul pendant une calibration** (le tour de poses automatique `calib_pose_tour` a été supprimé : dangereux, deux incidents matériels — violation de limite articulaire et collision). On place le bras à la main dans chaque pose, on attend que `calib_sample_guard` affiche `OK`, puis on prend l'échantillon dans `rqt` (≥ 15 poses variées, cf. `handeye_tf_publisher/README.md`).
 
 **Dans `rqt`** : sélectionner l'algorithme **Park** (pas Tsai-Lenz, le défaut) dans le menu déroulant avant de prendre le premier échantillon. Sauvegarder les échantillons bruts (`save_samples`, pas juste `save_calibration`) si tu veux pouvoir en rajouter plus tard sans tout refaire :
 ```bash
 ros2 service call /easy_handeye2/calibration/save_samples easy_handeye2_msgs/srv/SaveSamples "{}"
 ```
-
-`run_pose_tour:=false` pour une session manuelle classique sans le tour automatique (ex: juste re-sauvegarder une calibration existante).
 
 ## Publier une calibration
 
@@ -92,8 +91,8 @@ Sur ce montage, dans l'ordre testé :
 1. **Intrinsèques caméra** : écartées (`calib_intrinsics_test` — écart de 1.75% sur un déplacement de 120mm, très inférieur à ce qu'il faudrait pour expliquer un biais de pick de plusieurs cm)
 2. **Rigidité du montage tag/cube** : écartée (`calib_rigidity_test` — dérive du tag ≈ dérive propre de la main après retour en espace articulaire à la config de départ, pas de résidu inexpliqué)
 3. **Solveur AX=XB "à une inconnue"** : le montage eye-on-base actuel (tag sur `fp3_hand`, caméra fixe) résout déjà l'offset gripper→tag comme sa propre inconnue — vérifié par dérivation mathématique directe et par lecture du code source `easy_handeye2` (`handeye_sampler.py`, le "trick" d'inversion pour `eye_on_base` est correct, pas un bug)
-4. **Couverture de poses insuffisante** : piste principale restante, non encore confirmée/infirmée — `calib_pose_tour` a été construit pour ça (poses proches de la caméra, dans la vraie zone de travail des picks), mais une session avec ce tour a encore montré une "Maximum divergence" élevée à la dernière vérification — cause encore incertaine.
+4. **Couverture de poses insuffisante** : piste principale restante, non encore confirmée/infirmée — à traiter en guidant le bras à la main (poses proches de la caméra, dans la vraie zone de travail des picks, orientations variées). L'ancien tour automatique `calib_pose_tour` a été supprimé pour raison de sécurité.
 
 ## Non testé
 
-Ce workspace vient d'être créé — `calib_bringup.launch.py` n'a jamais été lancé de bout en bout (seule sa construction a été vérifiée, `--show-args`). Les packages `calib_pose_tour`/`calib_rigidity_test`/`calib_intrinsics_test` sont des copies fonctionnellement identiques de scripts déjà validés en conditions réelles sur ce robot (dans `franka_demo_ws`/scratchpad), mais pas encore ré-exécutés depuis leur nouvel emplacement dans `calib_ws`.
+Ce workspace vient d'être créé — `calib_bringup.launch.py` n'a jamais été lancé de bout en bout (seule sa construction a été vérifiée, `--show-args`). Les packages `calib_rigidity_test`/`calib_intrinsics_test` sont des copies fonctionnellement identiques de scripts déjà validés en conditions réelles sur ce robot (dans `franka_demo_ws`/scratchpad), mais pas encore ré-exécutés depuis leur nouvel emplacement dans `calib_ws`.

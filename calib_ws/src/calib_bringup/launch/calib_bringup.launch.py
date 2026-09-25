@@ -1,6 +1,5 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, TimerAction
-from launch.conditions import IfCondition
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -13,24 +12,13 @@ from launch_ros.substitutions import FindPackageShare
 REALSENSE_COLOR_PROFILE = '1280x720x30'
 REALSENSE_DEPTH_PROFILE = '1280x720x30'
 
-# Seconds to wait after starting the camera/apriltag/move_group stack before
-# starting calib_pose_tour -- gives fp3_moveit_server (move_group,
-# ros2_control, robot_state_publisher) and handeye_tf_publisher a head start
-# on a cold real-hardware boot, which can easily take longer than the tour
-# node's own internal TF-wait timeout on its own.
-POSE_TOUR_START_DELAY_S = 15.0
-
-
 # Root entry point for calib_ws: one command brings up everything needed for
 # a full hand-eye calibration session end-to-end -- camera, apriltag
 # detection, easy_handeye2's calibrator UI, calib_sample_guard's live
 # reprojection-error/tilt guardrail, the real arm stack (fp3_moveit_server,
 # from franka_demo_ws -- not duplicated here, source that workspace alongside
-# this one), and the pose tour that drives the arm through the real pick
-# working volume so samples can be taken close to the camera at varied
-# orientations (cf. calib_pose_tour). run_pose_tour:=false to skip that last
-# step (e.g. re-verifying an existing calibration with fp3_apriltag_demo
-# instead of recalibrating, or taking samples manually by hand).
+# this one). The arm NEVER moves by itself during a calibration session: put
+# it in each pose by hand and take the sample from the rqt calibrator.
 def generate_launch_description():
     use_fake_hardware = LaunchConfiguration('use_fake_hardware')
     robot_ip = LaunchConfiguration('robot_ip')
@@ -40,7 +28,6 @@ def generate_launch_description():
     tracking_marker_frame = LaunchConfiguration('tracking_marker_frame')
     calibration_name = LaunchConfiguration('calibration_name')
     apriltag_params_file = LaunchConfiguration('apriltag_params_file')
-    run_pose_tour = LaunchConfiguration('run_pose_tour')
 
     moveit_server_bringup = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -120,32 +107,6 @@ def generate_launch_description():
         }],
     )
 
-    # Drives the arm through the real pick working volume for sample-taking
-    # (cf. calib_pose_tour/CLAUDE.md) -- delayed to give the rest of the
-    # stack (move_group, handeye_tf_publisher's TF composition) a head start
-    # on a cold boot, cf. POSE_TOUR_START_DELAY_S above.
-    pose_tour = TimerAction(
-        period=POSE_TOUR_START_DELAY_S,
-        actions=[
-            Node(
-                package='calib_pose_tour',
-                executable='calib_pose_tour',
-                output='screen',
-                # Bootstraps anchor placement from the PREVIOUS saved
-                # calibration under this same name (read before this
-                # session's own "Save" overwrites it) -- cf.
-                # calibration_pose_tour_node.py's _read_calibration_pose
-                # docstring for why this can't be live TF (there is no real
-                # fp3_link0 -> camera_color_optical_frame transform yet
-                # during an active calibration session; only
-                # easy_handeye2_calibrate's own dummy_publisher placeholder
-                # exists at that point).
-                parameters=[{'calibration_name': calibration_name}],
-            ),
-        ],
-        condition=IfCondition(run_pose_tour),
-    )
-
     return LaunchDescription([
         DeclareLaunchArgument(
             'use_fake_hardware', default_value='true',
@@ -175,12 +136,6 @@ def generate_launch_description():
                 [FindPackageShare('handeye_tf_publisher'), 'tags', '36h11_0_0.04.yaml']),
             description='apriltag_node params file (family/size/detector settings)'),
         DeclareLaunchArgument(
-            'run_pose_tour', default_value='true',
-            description=(
-                'Also drive the arm through calib_pose_tour\'s pose sequence for sample-'
-                'taking. Set false to bring up a plain manual calibration session '
-                '(e.g. to only re-verify an existing calibration with fp3_apriltag_demo).')),
-        DeclareLaunchArgument(
             'target_tag_id', default_value='0',
             description='Tag id calib_sample_guard watches (must match the calibration tag)'),
         moveit_server_bringup,
@@ -188,5 +143,4 @@ def generate_launch_description():
         apriltag_node,
         easy_handeye2_calibrate,
         sample_guard,
-        pose_tour,
     ])

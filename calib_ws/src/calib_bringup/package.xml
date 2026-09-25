@@ -7,8 +7,8 @@
     Root launch entry point for calib_ws: brings up a full hand-eye
     calibration session end-to-end -- camera, apriltag detection,
     easy_handeye2's calibrator UI, the real arm stack (fp3_moveit_server,
-    from franka_demo_ws), and calib_pose_tour to drive sample-taking through
-    the real pick working volume.
+    from franka_demo_ws). The arm is never moved automatically: poses are
+    set by hand and samples taken from the rqt calibrator.
   </description>
   <maintainer email="n.elbachari@gmail.com">nour el bachari</maintainer>
   <license>Apache-2.0</license>
@@ -17,7 +17,6 @@
   <exec_depend>apriltag_ros</exec_depend>
   <exec_depend>easy_handeye2</exec_depend>
   <exec_depend>handeye_tf_publisher</exec_depend>
-  <exec_depend>calib_pose_tour</exec_depend>
   <exec_depend>calib_rigidity_test</exec_depend>
   <exec_depend>calib_sample_guard</exec_depend>
   <exec_depend>calib_axis_test</exec_depend>
