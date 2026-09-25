@@ -15,8 +15,13 @@ __pycache__/
 .DS_Store
 .claude/
 
-# Large / generated (not versioned)
-GraspGen/GraspGenModels/
 
 # Franka upstream (clone yourself, cf. README)
 franka_ros2_ws/
+
+# Model weights / large generated data (not versioned)
+GraspGen/GraspGenModels/
+
+# Build outputs and local tooling inside the vendored projects
+GraspGen/pointnet2_ops/build/
+SAM3/sam3_client/output/

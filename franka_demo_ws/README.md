@@ -84,21 +84,16 @@ pip install --user --break-system-packages msgpack-numpy      # ZMQ numpy serial
 The general way to get every declared ROS dependency is
 `rosdep install --from-paths src --ignore-src -r -y` from `franka_demo_ws` (after `franka_ros2_ws` is built and sourced).
 
-### 2.4 External projects: SAM3, GraspGen, ER
+### 2.4 SAM3, GraspGen, ER
 
-They live next to the workspaces and run in **their own conda environments** — never mix them with the ROS 2 system Python.
+They are part of this repository, next to the workspaces, and run in **their own conda environments** — never mix
+them with the ROS 2 system Python. Each directory has a `README_FP3.md` with the exact setup, weights and test commands.
 
-```bash
-cd $FP3_ROOT
-git submodule update --init            # SAM3 and GraspGen (upstream projects)
-scripts/apply_patches.sh               # this project's ZMQ server/client and collision filter, idempotent
-```
-
-| Project | Conda env | What to do |
+| Project | Conda env | Setup |
 |---|---|---|
-| `SAM3` | `SAM3` | Create the env following `SAM3/README.md`. Weights come from the gated Hugging Face repo [`facebook/sam3`](https://huggingface.co/facebook/sam3): request access, then `hf auth login` (cached in `~/.cache/huggingface`). |
-| `GraspGen` | `GraspGen` | Create the env following `GraspGen/README.md` (incl. `pointnet2_ops`). Download the checkpoints (about 8 GB, only `graspgen_franka_panda_*` is used): `cd GraspGen && git lfs install && git clone https://huggingface.co/adithyamurali/GraspGenModels` |
-| `ER` | `ER` | Simulator only, no ROS: `opencv-python==4.9.0.80`, `numpy==1.26.4`, `pyzmq`. Do not source ROS in this env. |
+| `SAM3/` | `SAM3` | [`SAM3/README_FP3.md`](../SAM3/README_FP3.md): env (Python 3.12, torch 2.10 cu128), `pip install -e ".[inference]"`, gated weights `facebook/sam3` via `hf auth login` |
+| `GraspGen/` | `GraspGen` | [`GraspGen/README_FP3.md`](../GraspGen/README_FP3.md): env (Python 3.10, torch 2.1 cu121), `./install_pointnet.sh`, checkpoints (about 8 GB) cloned into `GraspGen/GraspGenModels/` |
+| `ER/` | `ER` | Simulator only, no ROS: `opencv-python==4.9.0.80`, `numpy==1.26.4`, `pyzmq`. Do not source ROS in this env. |
 
 `conda` must be on the `PATH` of the terminal that runs `ros2 launch` (a terminal where `conda activate` works).
 The launch file finds `SAM3/` and `GraspGen/` by walking up from its own location, or from `$FP3_ROOT` if set.

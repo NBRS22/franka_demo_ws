@@ -8,10 +8,8 @@ FP3/
 ├── franka_demo_ws/   pick pipeline (bridges, task manager, fp3_moveit_server, franka_fp3_moveit_config)
 ├── calib_ws/         eye-on-base hand-eye calibration and verification tools
 ├── ER/               Gemini ER simulator / client
-├── GraspGen/         submodule (NVlabs/GraspGen), local changes in patches/GraspGen
-├── SAM3/             submodule (facebookresearch/sam3), local changes in patches/SAM3
-├── patches/          our changes to the two submodules (applied by scripts/apply_patches.sh)
-├── scripts/          apply_patches.sh
+├── SAM3/             segmentation server (copy of facebookresearch/sam3 + our ZMQ server), see SAM3/README_FP3.md
+├── GraspGen/         grasp-generation server (copy of NVlabs/GraspGen + our changes), see GraspGen/README_FP3.md
 └── franka_ros2_ws/   NOT in this repo -- clone it yourself (see below)
 ```
 
@@ -21,21 +19,13 @@ Each workspace has its own README with setup and launch instructions:
 ## Clone
 
 ```bash
-git clone --recurse-submodules -b new https://github.com/NBRS22/franka_demo_ws.git FP3   # branch name/remote as pushed
+git clone -b new https://github.com/NBRS22/franka_demo_ws.git FP3     # remote / branch as pushed
 cd FP3
 export FP3_ROOT=$PWD
-scripts/apply_patches.sh          # applies patches/ to GraspGen and SAM3 (idempotent)
 ```
-
-Model weights are not versioned: GraspGen checkpoints (`git clone https://huggingface.co/adithyamurali/GraspGenModels`
-inside `GraspGen/`) and the gated SAM3 weights (`hf auth login`, Hugging Face `facebook/sam3`). Conda environments
-`SAM3`, `GraspGen` and `ER` are described in `franka_demo_ws/README.md`.
-
-All commands in the docs assume:
-
-```bash
-export FP3_ROOT=~/Documents/FP3     # wherever you cloned this repo
-```
+`SAM3/` and `GraspGen/` are **included in the repository** (no submodules, no patches to apply). What is *not* versioned:
+the model weights — GraspGen checkpoints (about 8 GB) and the gated SAM3 weights — and the Franka library below.
+Follow `SAM3/README_FP3.md` and `GraspGen/README_FP3.md` (conda environment, weights, test commands).
 
 ## Franka ROS 2 (not included)
 
