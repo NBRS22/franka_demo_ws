@@ -4,7 +4,3 @@
 [submodule "SAM3"]
 	path = SAM3
 	url = https://github.com/facebookresearch/sam3.git
-[submodule "franka_ros2_ws/src"]
-	path = franka_ros2_ws/src
-	url = https://github.com/frankarobotics/franka_ros2.git
-	branch = jazzy

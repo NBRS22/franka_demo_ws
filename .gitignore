@@ -17,3 +17,6 @@ __pycache__/
 
 # Large / generated (not versioned)
 GraspGen/GraspGenModels/
+
+# Franka upstream (clone yourself, cf. README)
+franka_ros2_ws/

@@ -9,7 +9,7 @@ project(franka_fp3_moveit_config)
 find_package(ament_cmake REQUIRED)
 
 install(
-  DIRECTORY config launch rviz
+  DIRECTORY config launch rviz robot_configs
   DESTINATION share/${PROJECT_NAME}
 )
 
