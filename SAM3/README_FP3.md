@@ -26,6 +26,9 @@ franka_demo_ws / sam3_bridge_node ──ZMQ REQ──▶ sam3_server (this direc
 
 ## Setup
 
+**Quick way** (from the repository root): `scripts/install_conda.sh && scripts/setup_envs.sh SAM3 && scripts/download_models.sh sam3`
+(the account steps for the gated weights are in step 4 below and in the root README, section 4.3). The manual steps follow.
+
 Requirements: NVIDIA GPU with CUDA ≥ 12.6 (the model uses about 3.6 GB of GPU memory), Ubuntu 24.04, `conda`.
 
 ```bash

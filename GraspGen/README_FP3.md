@@ -26,6 +26,9 @@ franka_demo_ws / graspgen_bridge_node ──ZMQ REQ──▶ graspgen_server.py 
 
 ## Setup
 
+**Quick way** (from the repository root): `scripts/install_conda.sh && scripts/setup_envs.sh GraspGen && scripts/download_models.sh graspgen`
+(Franka checkpoints only, about 1 GB; `--all-graspgen` for everything). The manual steps follow.
+
 Requirements: NVIDIA GPU + CUDA toolkit matching PyTorch (12.1), `gcc-12`/`g++-12` (`sudo apt install gcc-12 g++-12`), `conda`.
 
 ```bash
@@ -43,7 +46,8 @@ pip install -e .
 ./install_pointnet.sh
 pip install pyzmq msgpack msgpack-numpy
 
-# 4. Model checkpoints (about 8 GB, NOT in this repository). Only graspgen_franka_panda_* is used by the FP3.
+# 4. Model checkpoints (NOT in this repository). Only graspgen_franka_panda_* is used by the FP3 (about 1 GB):
+#    scripts/download_models.sh graspgen        (all grippers, about 8 GB: --all-graspgen, or:)
 sudo apt install git-lfs && git lfs install
 git clone https://huggingface.co/adithyamurali/GraspGenModels        # creates GraspGen/GraspGenModels/
 ```

@@ -25,7 +25,7 @@ Every folder has its own README — start there for the details of that part.
 | [`SAM3/`](SAM3/) | Segmentation server (Meta's SAM 3 + our ZMQ server) | [`SAM3/README_FP3.md`](SAM3/README_FP3.md) |
 | [`GraspGen/`](GraspGen/) | Grasp-generation server (NVIDIA's GraspGen + our collision-filtering ZMQ server) | [`GraspGen/README_FP3.md`](GraspGen/README_FP3.md) |
 | [`ER/`](ER/) | Click-to-pick simulator standing in for Gemini ER | [`ER/README.md`](ER/README.md) |
-| `scripts/` | `install_franka_ros2.sh`, `smoke_test.sh` | this file |
+| `scripts/` | `install_franka_ros2.sh`, `install_conda.sh`, `setup_envs.sh`, `download_models.sh`, `smoke_test.sh` | this file |
 | `franka_ros2_ws/` | Franka's `franka_ros2` — **not versioned here**, created by `scripts/install_franka_ros2.sh` | [section 3](#3-franka-ros-2-external) |
 
 ## Setup at a glance
@@ -35,7 +35,7 @@ git clone -b new https://github.com/NBRS22/franka_demo_ws.git FP3 && cd FP3     
 export FP3_ROOT=$PWD
 source /opt/ros/jazzy/setup.bash
 scripts/install_franka_ros2.sh                                                   # 3. Franka's library (clone + build)
-# 4. conda envs + model weights: SAM3/README_FP3.md, GraspGen/README_FP3.md, ER/README.md
+scripts/install_conda.sh && scripts/setup_envs.sh && scripts/download_models.sh   # 4. conda, envs, model weights
 source franka_ros2_ws/install/setup.bash
 (cd franka_demo_ws && colcon build --symlink-install)                            # 5. build the pipeline
 source franka_demo_ws/install/setup.bash
@@ -84,13 +84,69 @@ robot launch configs (`robot_configs/fp3.config.yaml`) live in `franka_demo_ws/s
 
 ## 4. Conda environments and model weights
 
-Three separate conda environments (never mix them with the ROS 2 system Python). Weights are not versioned.
+The perception servers run in **their own conda environments** (never mix them with the ROS 2 system Python). Model
+weights are not versioned. Three scripts do everything; each one is idempotent and prints what it does.
 
-| Env | Folder | Guide | Weights |
+### 4.1 Install conda (once)
+
+```bash
+scripts/install_conda.sh          # installs Miniconda into ~/miniconda3 if conda is not already there (no sudo)
+~/miniconda3/bin/conda init bash  # optional, then open a new terminal, so that `conda activate` works
+conda config --set auto_activate_base false     # keep `base` OFF: its python3 would shadow the system one used by ROS 2
+```
+The launch files find conda by themselves (`$CONDA_EXE`, `~/miniconda3`, `~/anaconda3`, `~/miniforge3`, `/opt/conda`),
+so conda does not have to be on the `PATH`. Already have Miniconda/Anaconda? Skip this step.
+
+### 4.2 Create the environments
+
+Requirements: an NVIDIA driver (`nvidia-smi` works); for GraspGen also the CUDA compiler and gcc 12:
+`sudo apt install nvidia-cuda-toolkit gcc-12 g++-12`.
+
+```bash
+scripts/setup_envs.sh                 # ER, SAM3 and GraspGen   (or name some: scripts/setup_envs.sh ER SAM3)
+```
+
+| Env | Python | Main contents | Used by |
 |---|---|---|---|
-| `SAM3` | `SAM3/` | [`SAM3/README_FP3.md`](SAM3/README_FP3.md) | gated Hugging Face `facebook/sam3` (`hf auth login`) |
-| `GraspGen` | `GraspGen/` | [`GraspGen/README_FP3.md`](GraspGen/README_FP3.md) | about 8 GB, `git clone https://huggingface.co/adithyamurali/GraspGenModels` into `GraspGen/` |
-| `ER` | `ER/` | [`ER/README.md`](ER/README.md) | none |
+| `ER` | 3.12 | `opencv-python==4.9.0.80`, `numpy==1.26.4`, `pyzmq`, `msgpack` | `ER/gemini_er_simulator.py` (no ROS, no GPU) |
+| `SAM3` | 3.12 | `torch==2.10.0` (CUDA 12.8 build), this repo's `SAM3/` installed editable, `pyzmq`, `msgpack` | SAM3 server |
+| `GraspGen` | 3.10 | `torch==2.1.0` (CUDA 12.1 build), `torch-cluster`, `torch-scatter`, this repo's `GraspGen/` editable, the compiled `pointnet2_ops` extension, `pyzmq`, `msgpack`, `msgpack-numpy` | GraspGen server |
+
+The environment names are what `franka_demo.launch.py` expects. Downloads are large (several GB of PyTorch/CUDA libraries)
+and the `pointnet2_ops` compilation takes a few minutes. The editable installs point at the clone in which you ran the script:
+run it again (after `conda env remove -n <name>`) if you move the repository.
+
+### 4.3 Download the model weights
+
+```bash
+scripts/download_models.sh                    # GraspGen Franka checkpoints + SAM3 weights
+scripts/download_models.sh graspgen           # only GraspGen (public, about 1 GB; add --all-graspgen for all grippers, about 8 GB)
+scripts/download_models.sh sam3               # only SAM3 (needs the account steps below)
+```
+
+| Weights | Source | Size | Goes to | Access |
+|---|---|---|---|---|
+| GraspGen checkpoints | [`huggingface.co/adithyamurali/GraspGenModels`](https://huggingface.co/adithyamurali/GraspGenModels) | about 1 GB (Franka Panda only) / 8 GB (all) | `GraspGen/GraspGenModels/` | public |
+| SAM 3 | [`huggingface.co/facebook/sam3`](https://huggingface.co/facebook/sam3) | a few GB | Hugging Face cache `~/.cache/huggingface` | **gated** |
+
+SAM 3 is gated by Meta. Once: create a free Hugging Face account, open the model page above and **request access**
+(usually granted quickly), create a *read* token at [`huggingface.co/settings/tokens`](https://huggingface.co/settings/tokens),
+then `conda activate SAM3 && hf auth login` and paste the token. The script then downloads the weights (it stops with a clear message
+if you are not logged in). Without the script, the weights are also fetched automatically the first time the SAM3 server starts.
+
+### 4.4 Checklist: a complete, working repository
+
+After sections 2–5 you should have (this is exactly what `scripts/smoke_test.sh --with-servers` needs):
+
+| Item | Check |
+|---|---|
+| repository cloned, `FP3_ROOT` exported | `ls $FP3_ROOT` shows `franka_demo_ws calib_ws SAM3 GraspGen ER scripts` |
+| `franka_ros2_ws/install` | `ls $FP3_ROOT/franka_ros2_ws/install/setup.bash` |
+| `franka_demo_ws/install`, `calib_ws/install` | same with each workspace |
+| conda envs `ER`, `SAM3`, `GraspGen` | `conda env list` |
+| GraspGen checkpoints | `ls GraspGen/GraspGenModels/checkpoints/graspgen_franka_panda.yml` |
+| SAM3 weights cached | `ls ~/.cache/huggingface/hub | grep sam3` |
+| a hand-eye calibration (real robot only) | `ls ~/.ros2/easy_handeye2/calibrations/` |
 
 ## 5. Build (order matters)
 

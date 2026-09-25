@@ -15,6 +15,8 @@ the same message: `{"task_type": "pick"|"place", "point_x", "point_y", "object_l
 
 ## Setup
 
+From the repository root: `scripts/install_conda.sh && scripts/setup_envs.sh ER`. Manually:
+
 ```bash
 conda create -n ER python=3.12 -y && conda activate ER
 pip install opencv-python==4.9.0.80 numpy==1.26.4 pyzmq msgpack
