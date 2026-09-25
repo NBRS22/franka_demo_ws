@@ -42,7 +42,7 @@ configurations are shipped by that package (`robot_configs/fp3.config.yaml`,
 ```bash
 ros2 launch franka_bringup example.launch.py \
   robot_config_file:=$(ros2 pkg prefix franka_fp3_moveit_config)/share/franka_fp3_moveit_config/robot_configs/fp3.config.yaml \
-  controller_name:=gravity_compensation_example_controller
+  controller_names:=gravity_compensation_example_controller
 ```
 
 ## Build order
