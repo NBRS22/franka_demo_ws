@@ -3,8 +3,8 @@
 <package format="3">
   <name>graspgen_bridge</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="ngr@todo.todo">ngr</maintainer>
+  <description>ZMQ bridge to the GraspGen grasp-generation server (GenerateGraspPose service, RViz grasp visualization)</description>
+  <maintainer email="n.elbachari@gmail.com">nour el bachari</maintainer>
   <license>TODO: License declaration</license>
 
   <depend>rclpy</depend>

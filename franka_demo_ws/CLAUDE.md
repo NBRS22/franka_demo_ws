@@ -6,13 +6,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Pipeline pick-and-place robotique pour un Franka FR3, orchestré en ROS2 (Jazzy), avec la perception (segmentation, génération de grasp) externalisée dans des serveurs Python séparés (SAM3, GraspGen) accédés via ZMQ+msgpack, et une commande déclenchée par Gemini ER (VLM tournant sur une machine séparée).
 
-**Le pipeline s'arrête volontairement à la génération/visualisation des grasp poses pour le moment** — l'exécution du mouvement (MoveIt2) a été entièrement retirée du repo (`motion_node`, `scene_publisher_node`, `ExecuteGrasp.srv` supprimés), cf. "Architecture" et roadmap #2. Ce n'est pas juste débranché : il faudra la réécrire pour la rebrancher.
+**État actuel** : le pipeline va du clic (Gemini ER) jusqu'à l'exécution du pick sur le FP3. `pick_task_node` enchaîne caméra, SAM3, nuage de points, GraspGen, puis — uniquement si le paramètre `execute_pick` vaut `true` (défaut `false`, aucun mouvement) — envoie les grasps à l'action `mtc_pick` de `fp3_moveit_server` (MoveIt Task Constructor, pince via les vraies actions `franka_gripper`). L'ancien `motion_node`/`ExecuteGrasp.srv` a bien été supprimé, puis remplacé par ce package. **Documentation de setup/lancement : `README.md`.**
 
 Packages du workspace :
 
 | Package | Type | Rôle |
 |---|---|---|
-| `franka_demo_interfaces` | `ament_cmake` | Définitions des `.srv` |
+| `franka_demo_interfaces` | `ament_cmake` | Définitions des `.srv` et des actions (`MtcPick`, `MoveToPose` — cette dernière n'a plus de serveur) |
+| `fp3_moveit_server` | `ament_cmake` | Seul propriétaire de `move_group` : `pick_place_node` (MTC), `command_router_node` (action publique `mtc_pick`), `scene_setup_node` (table + mur) |
+| `franka_fp3_moveit_config` | `ament_cmake` | Configuration MoveIt du FP3 + `robot_configs/fp3*.config.yaml` (ex-`franka_ros2_ws`) |
+| `handeye_tf_publisher` | `ament_python` | Publie `fp3_link0 → camera_link` depuis un `.calib` (doublon de `calib_ws`) |
 | `franka_demo_bringup` | `ament_python` (launch only) | Launch file racine : RealSense + inclusion du launch de `robot_task_manager` |
 | `robot_task_manager` | `ament_python` | Orchestration du pick (`pick_task_node`), buffer caméra, pointcloud — son launch file (`launch/robot_task_manager.launch.py`) démarre aussi les bridges (`gemini_er_bridge`, `sam3_bridge`, `graspgen_bridge`) |
 | `gemini_er_bridge` | `ament_python` | Pont ZMQ vers Gemini ER (`camera_bridge_node`, `command_bridge_node`) |
@@ -38,12 +41,12 @@ source install/setup.bash
 ros2 launch franka_demo_bringup franka_demo.launch.py
 ```
 
-`franka_demo_bringup/launch/franka_demo.launch.py` est le launch file racine. Il ne cible plus qu'un robot réel — **la branche Isaac Sim (`panda_motion_server`) et l'argument `use_sim` ont été retirés**, il n'y a plus qu'un seul chemin de lancement. Il démarre maintenant lui-même les serveurs externes SAM3 et GraspGen (via `conda run`, cf. "Serveurs externes" ci-dessous), attend qu'ils répondent healthy sur leur port ZMQ, puis seulement démarre RealSense D455 (`align_depth.enable:=true`, résolution color/depth 1280x720x30 — résolution native max, cf. "Convention de coordonnées" ; `pointcloud.enable` volontairement **non** activé — bug connu de `realsense-ros`, cf. dette technique "Important") et **inclut** (`IncludeLaunchDescription`) le launch file de `robot_task_manager`, qui lui démarre tous les nodes ROS2 du pipeline (bridges compris) :
+`franka_demo_bringup/launch/franka_demo.launch.py` est le launch file racine. Il ne cible plus qu'un robot réel — **la branche Isaac Sim (`panda_motion_server`) et l'argument `use_sim` ont été retirés**, il n'y a plus qu'un seul chemin de lancement. Il démarre maintenant lui-même les serveurs externes SAM3 et GraspGen (via `conda activate` + `exec`, cf. "Serveurs externes" ci-dessous), attend qu'ils répondent healthy sur leur port ZMQ, puis seulement démarre RealSense D455 (`align_depth.enable:=true`, résolution color/depth 1280x720x30 — résolution native max, cf. "Convention de coordonnées" ; `pointcloud.enable` volontairement **non** activé — bug connu de `realsense-ros`, cf. dette technique "Important") et **inclut** (`IncludeLaunchDescription`) le launch file de `robot_task_manager`, qui lui démarre tous les nodes ROS2 du pipeline (bridges compris) :
 
 ```
 franka_demo_bringup/launch/franka_demo.launch.py
-  ├─ ExecuteProcess(sam3_server)       — conda run -n SAM3, $FP3_ROOT/SAM3
-  ├─ ExecuteProcess(graspgen_server)   — conda run -n GraspGen, $FP3_ROOT/GraspGen
+  ├─ ExecuteProcess(sam3_server)       — conda activate SAM3 + exec, $FP3_ROOT/SAM3
+  ├─ ExecuteProcess(graspgen_server)   — conda activate GraspGen + exec, $FP3_ROOT/GraspGen
   ├─ ExecuteProcess(wait_for_sam3)     — poll ZMQ health jusqu'à 'status': 'ok' (timeout 180s)
   │     └─ succès → ExecuteProcess(wait_for_graspgen) — même poll, port GraspGen
   │           └─ succès → démarre RealSense + robot_task_manager (ci-dessous)
@@ -91,7 +94,7 @@ ros2 run gemini_er_bridge camera_bridge_node
 
 ### Serveurs externes (hors colcon, envs conda séparés)
 
-**SAM3 et GraspGen sont désormais démarrés automatiquement par `ros2 launch franka_demo_bringup franka_demo.launch.py`** (cf. section précédente) — plus besoin de les lancer à la main dans le flow normal. Le launch file les lance via `conda run -n <env> --no-capture-output` (pas de `conda activate` interactif), avec le répertoire de travail et le nom d'env codés en dur dans `franka_demo_bringup/launch/franka_demo.launch.py` (`SAM3_DIR`, `SAM3_CONDA_ENV`, `GRASPGEN_DIR`, `GRASPGEN_CONDA_ENV` — chemins spécifiques à ce poste de dev, `$FP3_ROOT/{SAM3,GraspGen}`, à adapter si le workspace est cloné ailleurs).
+**SAM3 et GraspGen sont désormais démarrés automatiquement par `ros2 launch franka_demo_bringup franka_demo.launch.py`** (cf. section précédente) — plus besoin de les lancer à la main dans le flow normal. Le launch file les lance via `bash -c 'conda activate <env> && exec …'`, avec le répertoire de travail et le nom d'env codés en dur dans `franka_demo_bringup/launch/franka_demo.launch.py` (`SAM3_DIR`, `SAM3_CONDA_ENV`, `GRASPGEN_DIR`, `GRASPGEN_CONDA_ENV` — chemins spécifiques à ce poste de dev, `$FP3_ROOT/{SAM3,GraspGen}`, à adapter si le workspace est cloné ailleurs).
 
 Lancement manuel (debug isolé, ou pour `ros2 launch robot_task_manager robot_task_manager.launch.py` qui ne les démarre pas lui-même) :
 
@@ -104,7 +107,7 @@ Ne jamais mélanger ces envs conda avec le Python système utilisé par les node
 
 `franka_demo_bringup/scripts/wait_for_zmq_health.py` (nouveau, installé via `data_files` dans `setup.py` — pas un entry_point/node ROS2, un simple script appelé en `ExecuteProcess(cmd=['python3', <chemin installé>, ...])`) poll `{'action': 'health'}` sur le port ZMQ du serveur jusqu'à recevoir `{'status': 'ok'}` (retry toutes les 2s, `--timeout` 180s par défaut) — réutilise le même protocole que `_check_sam3_server`/`_check_graspgen_server` dans les bridges. Retourne 0 si healthy avant le timeout, 1 sinon (déclenche alors un `Shutdown()` du launch, cf. section précédente).
 
-**Non vérifié en conditions réelles** (session de dev sans lancement effectif des vrais serveurs SAM3/GraspGen ni du hardware) : le comportement de `conda run` sous un `ExecuteProcess`/`Shutdown()` de `launch_ros` lors d'un arrêt (Ctrl+C ou crash déclenchant le `Shutdown()`) — `conda run` a une réputation connue de mal propager certains signaux à son sous-processus, ce qui pourrait laisser un process Python (SAM3/GraspGen) orphelin plutôt que proprement tué. À confirmer dès que testable (`ros2 launch ...` puis Ctrl+C, vérifier `ps aux | grep sam3_server` après coup).
+**Vérifié** (lancement complet en matériel simulé, serveurs SAM3/GraspGen réels sur GPU) : `conda run` ne transmettait pas SIGINT/SIGTERM et laissait `sam3_server`/`graspgen_server` orphelins à l'arrêt du launch (GPU occupé, ports 5557/5558 bloqués). Corrigé : `_conda_run_cmd` active l'env dans le shell puis `exec` la commande (le serveur reçoit directement les signaux) ; après Ctrl-C plus aucun processus ni mémoire GPU résiduelle.
 
 ### Tests
 
@@ -142,7 +145,8 @@ pick_task_node (handle_pick_task, séquentiel, callbacks async via ReentrantCall
   4. /generate_grasp_pose      → graspgen_bridge → ZMQ REQ 5558 → serveur GraspGen
                                   (graspgen_bridge_node appelle lui-même /visualize_grasps dès les grasps
                                   reçus, en fire-and-forget — même pattern que sam3_bridge_node, cf. note ci-dessous)
-  -- fin du flow actuel --
+  5. /mtc_pick (si execute_pick:=true) → fp3_moveit_server : approche, fermeture pince, lift
+  -- sinon fin du flow : grasps générés/visualisés uniquement --
 ```
 
 `create_pointcloud_node` (renommé depuis `filter_pointcloud_node`, cf. Historique) **déprojette manuellement** — pas de dépendance au nuage natif RealSense (`/camera/camera/depth/color/points`). Raison : avec `align_depth.enable:=true` + `pointcloud.enable:=true` combinés, ce topic a un **bug non résolu côté `realsense-ros`** — le nuage généré est calculé indépendamment de l'alignement depth→couleur et se retrouve décalé spatialement (quelques cm, en translation) par rapport à la vraie position des objets ; confirmé en test réel sur ce setup (objet segmenté correctement, mais nuage décalé d'un bloc par rapport au nuage natif affiché dans RViz) et documenté upstream, sans fix officiel : [issue #2595](https://github.com/IntelRealSense/realsense-ros/issues/2595), [issue #3050](https://github.com/realsenseai/realsense-ros/issues/3050) (`pointcloud.enable` n'est donc plus activé du tout au launch — cf. `franka_demo_bringup`).
@@ -235,8 +239,8 @@ Le serveur GraspGen ne connaît par défaut que l'objet ciblé (`object_cloud`) 
 ### 1. Hand-eye calibration (eye-on-base) — toujours non fait
 AprilTag `tag36h11` ID 0 fixé sous la bride FR3, `apriltag_ros` + `easy_handeye2`, calibration `eye_on_hand:=false` avec `robot_base_frame:=fr3_link0`, `robot_effector_frame:=fr3_hand_tcp`, `tracking_base_frame:=camera_color_optical_frame`. 15+ échantillons avec poses variées. Le résultat alimentera le transform caméra→robot dont aura besoin la future implémentation de l'exécution du mouvement (cf. #2) — idéalement via un `static_transform_publisher` TF2 plutôt qu'une constante Python codée en dur (l'ancienne approche, supprimée avec `motion_node`).
 
-### 2. Exécution du mouvement (MoveIt2) — à réécrire depuis zéro
-L'ancienne implémentation (`motion_node.py`, `scene_publisher_node.py`, `ExecuteGrasp.srv`) a été **entièrement supprimée du repo** : le pipeline s'arrête désormais à la génération/visualisation des grasp poses (cf. "Architecture"). Elle utilisait l'action `/move_action` (`moveit_msgs/MoveGroup`) + gripper via `/panda_hand_controller/gripper_cmd`, avec des noms de frame/groupe Panda (`panda_arm`, `panda_hand`, `panda_link0`) hérités d'une calibration Isaac Sim — pas la convention FR3 (`fr3_arm`, `fr3_hand`, `fr3_link0`...). En la réécrivant : utiliser les bons noms FR3 dès le départ, prévoir le lancement d'un `move_group` réel (rien ne le fournit dans `franka_demo_bringup`), et rebrancher `/execute_grasp` dans `pick_task_node.handle_pick_task` une fois prête.
+### 2. Exécution du mouvement (MoveIt2) — fait
+Réécrite dans `fp3_moveit_server` (MTC, noms FR3/FP3 corrects, `move_group` lancé par `bringup.launch.py`), branchée via `execute_pick:=true`. Pick réel validé par morceaux ; reste le test complet clic → SAM3 → GraspGen → `mtc_pick` avec les derniers réglages (table, calibration), cf. `fp3_moveit_server/CLAUDE.md`.
 
 ### 3. Tests pipeline complet
 Test bout-en-bout avec `gemini_er_simulator.py`, validation visuelle RViz jusqu'à la génération de grasp (l'exécution du mouvement n'existe plus, cf. #2), puis test sur robot réel après calibration et réécriture de l'exécution.
@@ -252,7 +256,6 @@ Le vrai modèle Gemini Robotics-ER (une fois branché à la place du simulateur)
 ## Dette technique identifiée — à traiter
 
 ### Critique
-- **Pas d'exécution du mouvement** : cf. roadmap #2, à réécrire entièrement (attention au mismatch de noms Panda vs FR3 dans l'ancienne implémentation supprimée). Pas un blocage pour l'usage courant du pipeline (qui s'arrête à la génération de grasp), mais à traiter avant d'aller plus loin.
 - **`task_type: "stop"` ne peut rien interrompre** : `command_bridge` utilise un socket REP à alternance stricte et `_handle_pick_command` bloque le thread ZMQ dédié pendant tout un pick → un "stop" ne peut pas être reçu avant la fin du pick en cours. Toujours vrai malgré le passage à `MultiThreadedExecutor`/callbacks async côté `pick_task_node` (ce refactor a supprimé le risque de deadlock ROS2, mais pas la contrainte d'alternance stricte du socket ZMQ REP). Problème de sécurité tant que le bras peut être en mouvement pendant l'attente.
 - **`pick_task_node` ne valide plus `point_x`/`point_y`** : l'ancien `task_validator_node` (qui au moins bornait `< 0`) a été retiré du pipeline sans équivalent de remplacement — un point hors image ou aberrant passe désormais silencieusement jusqu'à SAM3.
 - **⚠️ Régression : `camera_buffer_node` n'a plus aucune vérification de synchronisation RGB/depth.** Le check qui rejetait `handle_get_frames` si `rgb`/`depth` étaient désynchronisés de plus de 100ms (`_SYNC_TOLERANCE_S`, comparaison de `header.stamp`) a disparu du code à un moment de ce chantier, sans suppression volontaire ni changement d'architecture qui l'expliquerait (contrairement aux autres suppressions de ce repo, toutes documentées et délibérées). `handle_get_frames` renvoie désormais `success=True` dès que les 4 buffers (`rgb`/`depth`/`camera_info`/`cloud`) sont non-`None`, sans jamais comparer leurs timestamps entre eux — un `depth` arbitrairement plus vieux que le `rgb` (caméra qui rame, republish partiel) passerait silencieusement jusqu'à SAM3 et au filtrage du nuage. À restaurer si ce n'est pas un choix délibéré.

@@ -14,9 +14,9 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='ngr',
-    maintainer_email='ngr@todo.todo',
-    description='TODO: Package description',
+    maintainer='nour el bachari',
+    maintainer_email='n.elbachari@gmail.com',
+    description='ZMQ bridge to the GraspGen grasp-generation server',
     license='TODO: License declaration',
     extras_require={
         'test': [

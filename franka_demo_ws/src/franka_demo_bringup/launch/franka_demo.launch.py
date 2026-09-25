@@ -1,4 +1,5 @@
 import os
+import shlex
 
 from launch import LaunchDescription
 from launch.actions import (
@@ -59,8 +60,18 @@ REALSENSE_DEPTH_PROFILE = '1280x720x30'
 
 
 def _conda_run_cmd(env_name, workdir, *command):
-    inner = ' '.join(['conda', 'run', '-n', env_name, '--no-capture-output', *command])
-    return ['bash', '-c', f'cd {workdir} && exec {inner}']
+    # `conda run` does not forward SIGINT/SIGTERM to its child, so stopping the
+    # launch left the model servers orphaned (GPU memory held, ports still bound).
+    # Activate the env in the shell and `exec` the command instead: the server
+    # replaces the shell and receives the signals directly.
+    inner = ' '.join(shlex.quote(a) for a in command)
+    script = (
+        f'cd {shlex.quote(workdir)} && '
+        'eval "$(conda shell.bash hook)" && '
+        f'conda activate {shlex.quote(env_name)} && '
+        f'exec {inner}'
+    )
+    return ['bash', '-c', script]
 
 
 def generate_launch_description():
@@ -151,7 +162,7 @@ def generate_launch_description():
         name='handeye_tf_publisher',
         output='screen',
         parameters=[{
-            'calibration_name': 'fp3_link0_d455_camera_color_optical_frame_001',
+            'calibration_name': LaunchConfiguration('calibration_name'),
             'calib_dir': '~/.ros2/easy_handeye2/calibrations',
             'publish_rate_s': 2.0,
             'camera_link_frame': 'camera_link',
@@ -194,6 +205,15 @@ def generate_launch_description():
             'use_rviz',
             default_value='false',
             description='Launch RViz with the MoveIt config.',
+        ),
+        DeclareLaunchArgument(
+            'calibration_name',
+            default_value='fp3_link0_d455_camera_color_optical_frame_001',
+            description=(
+                'easy_handeye2 .calib file (without extension) in '
+                '~/.ros2/easy_handeye2/calibrations/ published as fp3_link0 -> camera_link '
+                '(produced by calib_ws).'
+            ),
         ),
         DeclareLaunchArgument(
             'execute_pick',
