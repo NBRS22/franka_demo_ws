@@ -88,8 +88,16 @@ for p in "${PIECES[@]}"; do
       run_piece eye_in_hand 30 "apriltag_node.*process started|handeye_server.*process started" "handeye_server" -- \
         ros2 launch calib_eye_in_hand calibrate_eye_in_hand.launch.py use_fake_hardware:=true start_arm_stack:=false ;;
     calib_bridge)
-      run_piece calib_bridge 35 "apriltag_node.*process started|bridge_calibration_node.*process started" "apriltag_node|bridge_calibration_node" -- \
-        ros2 launch calib_bridge calib_bridge.launch.py use_fake_hardware:=true ;;
+      # bridge_calibration_node exits (FATAL) when the D405 .calib does not exist: that is a precondition, not a bug.
+      d405=$(ls "$HOME"/.ros2/easy_handeye2/calibrations/fp3_hand_d405*.calib 2>/dev/null | head -1)
+      if [ -n "$d405" ]; then
+        run_piece calib_bridge 35 "apriltag_node.*process started|bridge_calibration_node.*process started" "apriltag_node|bridge_calibration_node" -- \
+          ros2 launch calib_bridge calib_bridge.launch.py use_fake_hardware:=true d405_calibration_name:="$(basename "$d405" .calib)"
+      else
+        echo "    (no D405 calibration in ~/.ros2/easy_handeye2/calibrations: bridge_calibration_node is expected to stop; checking the rest)"
+        run_piece calib_bridge 35 "apriltag_node.*process started|D405 calibration file not found" "apriltag_node" -- \
+          ros2 launch calib_bridge calib_bridge.launch.py use_fake_hardware:=true
+      fi ;;
     apriltag_demo)
       run_piece apriltag_demo 40 "apriltag_node.*process started|apriltag_move_once_node.*process started|pick_place_node ready" "pick_place_node|move_group" -- \
         ros2 launch fp3_apriltag_demo apriltag_move_once.launch.py use_fake_hardware:=true use_rviz:=false ;;
